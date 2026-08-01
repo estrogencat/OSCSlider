@@ -32,9 +32,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: subosito/flutter-action@v2
+      # subosito/flutter-action doesn't support arm64-hosted runners yet (it
+      # auto-detects the runner arch and then fails to resolve a matching SDK
+      # release - see subosito/flutter-action#345). Flutter only ships one
+      # Windows SDK archive anyway (x64), which runs fine under Windows'
+      # built-in x64 emulation on arm64 - the actual build output still comes
+      # out native arm64 because that's the host Visual Studio toolchain.
+      - name: Set up Flutter (x64 runner)
+        if: matrix.arch == 'x64'
+        uses: subosito/flutter-action@v2
         with:
           channel: stable
+
+      - name: Set up Flutter (arm64 runner - manual install)
+        if: matrix.arch == 'arm64'
+        shell: pwsh
+        run: |
+          $manifest = Invoke-RestMethod -Uri "https://storage.googleapis.com/flutter_infra_release/releases/releases_windows.json"
+          $release = $manifest.releases | Where-Object { $_.hash -eq $manifest.current_release.stable } | Select-Object -First 1
+          $archiveUrl = "$($manifest.base_url)/$($release.archive)"
+          Invoke-WebRequest -Uri $archiveUrl -OutFile "$env:RUNNER_TEMP\flutter.zip"
+          Expand-Archive -Path "$env:RUNNER_TEMP\flutter.zip" -DestinationPath "C:\" -Force
+          Add-Content -Path $env:GITHUB_PATH -Value "C:\flutter\bin"
 
       - name: Enable Windows desktop
         run: flutter config --enable-windows-desktop
