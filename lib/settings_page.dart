@@ -5,12 +5,15 @@ import 'package:url_launcher/url_launcher.dart';
 import 'app_updater.dart';
 import 'config_store.dart';
 import 'custom_theme_dialog.dart';
+import 'oscquery_client.dart';
 import 'param_control.dart';
 import 'param_form_dialog.dart';
 import 'sequence_editor_page.dart';
 import 'theme_notifier.dart';
 
 const _repoUrl = 'https://github.com/estrogencat/OSCSlider';
+
+enum _OscStatus { checking, connected, disconnected }
 
 class SettingsPage extends StatefulWidget {
   final AppConfig config;
@@ -25,6 +28,7 @@ class _SettingsPageState extends State<SettingsPage> {
   late final TextEditingController _portController;
   String _appVersion = '';
   bool _checkingUpdate = false;
+  _OscStatus _oscStatus = _OscStatus.checking;
 
   AppConfig get config => widget.config;
 
@@ -36,6 +40,16 @@ class _SettingsPageState extends State<SettingsPage> {
     PackageInfo.fromPlatform().then((info) {
       if (mounted) setState(() => _appVersion = info.version);
     });
+    _checkOscStatus();
+  }
+
+  // OSC itself is a fire-and-forget UDP protocol with no real "connection" -
+  // this checks for a VRChat OSCQuery service via mDNS as a proxy for it.
+  Future<void> _checkOscStatus() async {
+    setState(() => _oscStatus = _OscStatus.checking);
+    final instances = await OscQueryClient.findVrchatInstances();
+    if (!mounted) return;
+    setState(() => _oscStatus = instances.isEmpty ? _OscStatus.disconnected : _OscStatus.connected);
   }
 
   @override
@@ -56,6 +70,27 @@ class _SettingsPageState extends State<SettingsPage> {
     });
     _persist();
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Connection saved')));
+  }
+
+  Widget _buildOscStatus(BuildContext context) {
+    final (color, label) = switch (_oscStatus) {
+      _OscStatus.checking => (Colors.amber, 'Checking...'),
+      _OscStatus.connected => (Colors.green, 'Connected'),
+      _OscStatus.disconnected => (Colors.red, 'Not found'),
+    };
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(width: 10, height: 10, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+        const SizedBox(width: 6),
+        Text(label, style: Theme.of(context).textTheme.bodyMedium),
+        IconButton(
+          icon: const Icon(Icons.refresh),
+          tooltip: 'Reconnect',
+          onPressed: _oscStatus == _OscStatus.checking ? null : _checkOscStatus,
+        ),
+      ],
+    );
   }
 
   void _pickColor(Color color) {
@@ -346,7 +381,13 @@ class _SettingsPageState extends State<SettingsPage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('Connection', style: Theme.of(context).textTheme.titleLarge),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text('Connection', style: Theme.of(context).textTheme.titleLarge),
+            _buildOscStatus(context),
+          ],
+        ),
         const SizedBox(height: 8),
         Row(
           children: [
