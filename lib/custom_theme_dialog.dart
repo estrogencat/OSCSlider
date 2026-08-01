@@ -203,22 +203,49 @@ class _CustomThemeDialogState extends State<CustomThemeDialog> {
     return Theme(
       data: Theme.of(context).copyWith(colorScheme: scheme),
       child: Builder(
-        builder: (context) => Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          crossAxisAlignment: WrapCrossAlignment.center,
+        builder: (context) => Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            FilledButton(onPressed: () {}, child: const Text('Filled')),
-            OutlinedButton(onPressed: () {}, child: const Text('Outlined')),
-            Switch(value: true, onChanged: (_) {}),
-            FilledButton(
-              style: FilledButton.styleFrom(backgroundColor: Theme.of(context).colorScheme.error),
-              onPressed: () {},
-              child: const Text('Error'),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                FilledButton(onPressed: () {}, child: const Text('Filled')),
+                OutlinedButton(onPressed: () {}, child: const Text('Outlined')),
+                Switch(value: true, onChanged: (_) {}),
+                FilledButton(
+                  style: FilledButton.styleFrom(backgroundColor: Theme.of(context).colorScheme.error),
+                  onPressed: () {},
+                  child: const Text('Error'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            // explicit swatches for every role - some (secondary/tertiary) have
+            // no built-in widget above that visibly reacts to them, so this is
+            // the only reliable way to see a role's actual current color.
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _swatch('Primary', scheme.primaryContainer, scheme.onPrimaryContainer),
+                _swatch('Secondary', scheme.secondaryContainer, scheme.onSecondaryContainer),
+                _swatch('Tertiary', scheme.tertiaryContainer, scheme.onTertiaryContainer),
+                _swatch('Error', scheme.errorContainer, scheme.onErrorContainer),
+              ],
             ),
           ],
         ),
       ),
+    );
+  }
+
+  Widget _swatch(String label, Color background, Color foreground) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(color: background, borderRadius: BorderRadius.circular(8)),
+      child: Text(label, style: TextStyle(color: foreground, fontSize: 12)),
     );
   }
 }

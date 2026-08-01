@@ -1,12 +1,7 @@
 ; Inno Setup script for OSCSlider.
-; builds one architecture at a time - pass /DAppArch=x64 or /DAppArch=arm64
-; on the ISCC command line (defaults to x64 if omitted). Flutter builds each
-; architecture into its own output folder under build\windows\<arch>\, so
-; this script just points at whichever one matches.
-
-#ifndef AppArch
-  #define AppArch "x64"
-#endif
+; there's only one build variant (x64) - it also runs on ARM64 Windows via
+; the OS's built-in x64 emulation, since Flutter doesn't ship a native ARM64
+; Windows toolchain to build a genuinely separate ARM64 binary from.
 
 #define AppName "OSCSlider"
 #ifndef AppVersion
@@ -14,7 +9,7 @@
 #endif
 #define AppPublisher "OSCSlider"
 #define AppExeName "OSCSlider.exe"
-#define ReleaseDir "..\build\windows\" + AppArch + "\runner\Release"
+#define ReleaseDir "..\build\windows\x64\runner\Release"
 
 [Setup]
 AppId={{6F5215C0-AFFC-4636-8DA5-FF65CDA7723A}
@@ -26,20 +21,15 @@ DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 UninstallDisplayIcon={app}\{#AppExeName}
 OutputDir=Output
-OutputBaseFilename=OSCSlider-Setup-{#AppArch}
+OutputBaseFilename=OSCSlider-Setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
-; ArchitecturesAllowed/InstallIn64BitMode steer {autopf} to the right Program
-; Files folder (plain "Program Files" for 64-bit/ARM64, not the x86 one -
-; that's reserved for genuinely 32-bit apps, which Flutter can't produce).
-#if AppArch == "arm64"
-ArchitecturesAllowed=arm64
-ArchitecturesInstallIn64BitMode=arm64
-#else
+; x64compatible steers {autopf} to the right Program Files folder (plain
+; "Program Files", not the x86 one) and - since Inno Setup 6.3 - also matches
+; ARM64 Windows machines with x64 emulation, so this one installer covers both.
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-#endif
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"

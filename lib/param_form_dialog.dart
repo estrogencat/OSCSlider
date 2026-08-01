@@ -24,7 +24,7 @@ class _ParamFormDialogState extends State<ParamFormDialog> {
   late final TextEditingController _minController;
   late final TextEditingController _maxController;
   late final TextEditingController _defaultController;
-  late final TextEditingController _customTypeController;
+  late String _customType;
   late final TextEditingController _customValueController;
   late ParamType _type;
   late NumericKind _numericKind;
@@ -40,7 +40,7 @@ class _ParamFormDialogState extends State<ParamFormDialog> {
     _minController = TextEditingController(text: (e?.min ?? 0.0).toString());
     _maxController = TextEditingController(text: (e?.max ?? 1.0).toString());
     _defaultController = TextEditingController(text: (e?.defaultValue ?? 0.0).toString());
-    _customTypeController = TextEditingController(text: e?.customTypeTag ?? 'f');
+    _customType = oscTypeTags.contains(e?.customTypeTag) ? e!.customTypeTag : 'f';
     _customValueController = TextEditingController(text: e?.customValueText ?? '0');
     _type = e?.type ?? ParamType.slider;
     _numericKind = e?.numericKind ?? NumericKind.float;
@@ -55,7 +55,6 @@ class _ParamFormDialogState extends State<ParamFormDialog> {
     _minController.dispose();
     _maxController.dispose();
     _defaultController.dispose();
-    _customTypeController.dispose();
     _customValueController.dispose();
     super.dispose();
   }
@@ -76,7 +75,7 @@ class _ParamFormDialogState extends State<ParamFormDialog> {
       defaultValue: double.tryParse(_defaultController.text) ?? 0.0,
       numericKind: _numericKind,
       defaultBool: _defaultBool,
-      customTypeTag: _customTypeController.text.trim().isEmpty ? 'f' : _customTypeController.text.trim(),
+      customTypeTag: _customType,
       customValueText: _customValueController.text,
     );
     Navigator.of(context).pop(control);
@@ -166,18 +165,25 @@ class _ParamFormDialogState extends State<ParamFormDialog> {
                   onChanged: (v) => setState(() => _defaultBool = v),
                 ),
               ] else ...[
-                TextField(
-                  controller: _customTypeController,
-                  decoration: const InputDecoration(
-                    labelText: 'OSC type tag',
-                    hintText: 'f, i, d, s, T, F, or anything else',
+                DropdownButtonFormField<String>(
+                  initialValue: _customType,
+                  decoration: const InputDecoration(labelText: 'OSC type'),
+                  items: [
+                    for (final tag in oscTypeTags)
+                      DropdownMenuItem(value: tag, child: Text(oscTypeLabel(tag))),
+                  ],
+                  onChanged: (v) => setState(() => _customType = v ?? 'f'),
+                ),
+                if (!oscTypeHasNoValue(_customType)) ...[
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: _customValueController,
+                    decoration: InputDecoration(
+                      labelText: 'Value',
+                      hintText: oscTypeValueHint(_customType),
+                    ),
                   ),
-                ),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: _customValueController,
-                  decoration: const InputDecoration(labelText: 'Value (sent as typed, best-effort)'),
-                ),
+                ],
               ],
             ],
           ),
@@ -190,3 +196,43 @@ class _ParamFormDialogState extends State<ParamFormDialog> {
     );
   }
 }
+
+// every OSC 1.0/1.1 type tag except arrays ("[","]") - arrays group multiple
+// values into one argument slot, which doesn't fit this app's
+// one-parameter-one-value model.
+const oscTypeTags = ['f', 'i', 'd', 'h', 's', 'S', 'c', 'r', 'm', 'b', 't', 'T', 'F', 'N', 'I'];
+
+String oscTypeLabel(String tag) => switch (tag) {
+      'f' => 'Float32',
+      'i' => 'Int32',
+      'd' => 'Float64 (double)',
+      'h' => 'Int64',
+      's' => 'String',
+      'S' => 'Symbol (like string)',
+      'c' => 'Char',
+      'r' => 'RGBA color',
+      'm' => 'MIDI message',
+      'b' => 'Blob (raw bytes)',
+      't' => 'Time tag',
+      'T' => 'True',
+      'F' => 'False',
+      'N' => 'Nil',
+      'I' => 'Infinitum',
+      _ => tag,
+    };
+
+// True/False/Nil/Infinitum carry no payload bytes - the type tag itself is
+// the whole value, so there's nothing for the user to type in.
+bool oscTypeHasNoValue(String tag) => const {'T', 'F', 'N', 'I'}.contains(tag);
+
+String oscTypeValueHint(String tag) => switch (tag) {
+      'f' || 'd' => 'e.g. 1.5',
+      'i' || 'h' => 'e.g. 42',
+      's' || 'S' => 'any text',
+      'c' => 'a single character',
+      'r' => '8 hex digits: RRGGBBAA',
+      'm' => '8 hex digits: port, status, data1, data2',
+      'b' => 'hex bytes, e.g. DEADBEEF',
+      't' => 'seconds since 1900, or "immediate"',
+      _ => '',
+    };

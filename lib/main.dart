@@ -1,11 +1,18 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
+import 'automation_dialog.dart';
+import 'automation_engine.dart';
 import 'config_store.dart';
 import 'osc_client.dart';
 import 'osc_listener.dart';
 import 'oscquery_client.dart';
 import 'param_control.dart';
 import 'param_form_dialog.dart';
+import 'schedule_dialog.dart';
+import 'schedule_engine.dart';
+import 'sequence_engine.dart';
 import 'settings_page.dart';
 import 'theme_notifier.dart';
 
@@ -62,6 +69,14 @@ class _HomePageState extends State<HomePage> {
   final Map<String, TextEditingController> _sliderTextControllers = {};
   final Map<String, TextEditingController> _customValueControllers = {};
   AvatarChangeListener? _avatarWatcher;
+  final _automationEngine = AutomationEngine();
+  final _scheduleEngine = ScheduleEngine();
+  final _sequenceEngine = SequenceEngine();
+  Timer? _engineTimer;
+  // tracks the last time a slider/toggle was touched by hand anywhere in the
+  // app - drives "idle" schedules. starts at "now" so a fresh launch doesn't
+  // read as having been idle since 1970.
+  DateTime _lastInteraction = DateTime.now();
 
   bool get _advancedMode => _config?.advancedMode ?? false;
 
@@ -69,6 +84,106 @@ class _HomePageState extends State<HomePage> {
   void initState() {
     super.initState();
     _reload();
+    _engineTimer = Timer.periodic(const Duration(milliseconds: 33), _tickEngines);
+  }
+
+  void _tickEngines(Timer timer) {
+    final config = _config;
+    if (config == null) return;
+    // automations/schedules can disable themselves on completion (a ramp's
+    // Once repeat, a countdown schedule, a sequence finishing) - watch for
+    // those transitions so they can be persisted, without writing
+    // config.json on every tick just because a value changed.
+    final wasAutomationEnabled = {
+      for (final p in config.parameters)
+        if (p.automation != null) p.name: p.automation!.enabled,
+    };
+    final wasScheduleEnabled = {
+      for (final p in config.parameters)
+        if (p.schedule != null) p.name: p.schedule!.enabled,
+    };
+    final wasSequenceEnabled = {for (final s in config.sequences) s.id: s.enabled};
+
+    var changed = false;
+    void onSlider(ParamControl param, double value) {
+      _values[param.name] = value;
+      _sliderTextControllers[param.name]?.text = _formatNumber(value, _advancedMode);
+      _sendSlider(param, value);
+      changed = true;
+    }
+
+    void onToggle(ParamControl param, bool value) {
+      _values[param.name] = value;
+      _osc?.sendBool('/avatar/parameters/${param.name}', value);
+      changed = true;
+    }
+
+    _automationEngine.tick(config.parameters, onSlider, onToggle);
+    _scheduleEngine.tick(config.parameters, _lastInteraction, _values, onSlider, onToggle);
+    _sequenceEngine.tick(config.sequences, config.parameters, _values, onSlider, onToggle);
+
+    if (changed) setState(() {});
+
+    final justFinished =
+        config.parameters.any((p) => wasAutomationEnabled[p.name] == true && p.automation?.enabled == false) ||
+            config.parameters.any((p) => wasScheduleEnabled[p.name] == true && p.schedule?.enabled == false) ||
+            config.sequences.any((s) => wasSequenceEnabled[s.id] == true && !s.enabled);
+    if (justFinished) _persist();
+  }
+
+  // manual interaction always wins - flipping a slider/toggle by hand while
+  // its automation is running pauses (not deletes) that automation, so the
+  // user can resume it later from the same dialog instead of re-entering it.
+  // also marks the app as "not idle" for idle-triggered schedules.
+  void _recordInteraction(ParamControl param) {
+    _lastInteraction = DateTime.now();
+    final auto = param.automation;
+    if (auto != null && auto.enabled) {
+      auto.enabled = false;
+      _persist();
+    }
+  }
+
+  Future<void> _openAutomationDialog(ParamControl param) async {
+    final changed = await showAutomationDialog(context, param);
+    if (!changed) return;
+    _persist();
+    setState(() {});
+  }
+
+  Future<void> _openScheduleDialog(ParamControl param) async {
+    final changed = await showScheduleDialog(context, param);
+    if (!changed) return;
+    _persist();
+    setState(() {});
+  }
+
+  Widget _automationButton(ParamControl param) {
+    final auto = param.automation;
+    final running = auto != null && auto.enabled;
+    final scheme = Theme.of(context).colorScheme;
+    return IconButton(
+      icon: Icon(running ? Icons.auto_awesome : Icons.auto_awesome_outlined),
+      color: running ? scheme.primary : (auto != null ? scheme.onSurfaceVariant : scheme.outline),
+      tooltip: running
+          ? 'Automation running - tap to edit'
+          : (auto != null ? 'Automation paused - tap to edit' : 'Add automation'),
+      onPressed: () => _openAutomationDialog(param),
+    );
+  }
+
+  Widget _scheduleButton(ParamControl param) {
+    final sched = param.schedule;
+    final running = sched != null && sched.enabled;
+    final scheme = Theme.of(context).colorScheme;
+    return IconButton(
+      icon: Icon(running ? Icons.schedule : Icons.schedule_outlined),
+      color: running ? scheme.primary : (sched != null ? scheme.onSurfaceVariant : scheme.outline),
+      tooltip: running
+          ? 'Schedule active - tap to edit'
+          : (sched != null ? 'Schedule paused - tap to edit' : 'Add schedule'),
+      onPressed: () => _openScheduleDialog(param),
+    );
   }
 
   void _disposeControllers() {
@@ -88,15 +203,17 @@ class _HomePageState extends State<HomePage> {
     });
     try {
       final config = await ConfigStore.load();
-      _osc?.dispose();
-      final osc = OscClient(host: config.host, port: config.port);
-      themeSettingsNotifier.value = ThemeSettings.fromConfig(config);
       setState(() {
         _config = config;
-        _osc = osc;
       });
-      _resetControllersForActiveProfile();
-      _startOrStopAvatarWatcher();
+      // reconcile rather than hard-reset - on first launch _values is empty
+      // so this initializes everything just like a full reset would, but on
+      // a manual refresh (or any later reload) it preserves whatever's
+      // already live instead of snapping every parameter back to default.
+      _reconcileAfterExternalEdit();
+      _automationEngine.reset();
+      _scheduleEngine.reset();
+      _sequenceEngine.reset();
     } catch (e) {
       setState(() {
         _error = e.toString();
@@ -137,6 +254,12 @@ class _HomePageState extends State<HomePage> {
     setState(() => config.activeProfileId = profileId);
     _persist();
     _resetControllersForActiveProfile();
+    // a same-named parameter in the new profile should start its automation
+    // fresh, not inherit timing from whatever was running under this name a
+    // moment ago on the old profile.
+    _automationEngine.reset();
+    _scheduleEngine.reset();
+    _sequenceEngine.reset();
   }
 
   // VRChat's default OSC layout always pairs a send port N with a receive
@@ -195,6 +318,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _onSliderChanged(ParamControl param, double value) {
+    _recordInteraction(param);
     setState(() {
       _values[param.name] = value;
     });
@@ -220,6 +344,7 @@ class _HomePageState extends State<HomePage> {
           _formatNumber(_values[param.name] as double? ?? param.defaultValue, _advancedMode);
       return;
     }
+    _recordInteraction(param);
     setState(() {
       // no limiter on the value itself - the textbox never touches min/max,
       // it only ever sets what gets sent. the slider thumb just clamps its
@@ -233,6 +358,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _onToggleChanged(ParamControl param, bool value) {
+    _recordInteraction(param);
     setState(() {
       _values[param.name] = value;
     });
@@ -496,6 +622,7 @@ class _HomePageState extends State<HomePage> {
 
   @override
   void dispose() {
+    _engineTimer?.cancel();
     _osc?.dispose();
     _avatarWatcher?.stop();
     _searchController.dispose();
@@ -674,10 +801,16 @@ class _HomePageState extends State<HomePage> {
     switch (param.type) {
       case ParamType.toggle:
         final value = _values[param.name] as bool? ?? param.defaultBool;
-        child = SwitchListTile(
-          title: Text(param.label),
-          value: value,
-          onChanged: (v) => _onToggleChanged(param, v),
+        child = Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+          child: Row(
+            children: [
+              Expanded(child: Text(param.label, style: Theme.of(context).textTheme.titleMedium)),
+              _automationButton(param),
+              _scheduleButton(param),
+              Switch(value: value, onChanged: (v) => _onToggleChanged(param, v)),
+            ],
+          ),
         );
       case ParamType.custom:
         final controller = _customValueControllers[param.name];
@@ -715,6 +848,8 @@ class _HomePageState extends State<HomePage> {
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   Expanded(child: Text(param.label, style: Theme.of(context).textTheme.titleMedium)),
+                  _automationButton(param),
+                  _scheduleButton(param),
                   SizedBox(
                     width: 90,
                     child: TextField(

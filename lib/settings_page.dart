@@ -4,6 +4,7 @@ import 'config_store.dart';
 import 'custom_theme_dialog.dart';
 import 'param_control.dart';
 import 'param_form_dialog.dart';
+import 'sequence_editor_page.dart';
 import 'theme_notifier.dart';
 
 class SettingsPage extends StatefulWidget {
@@ -234,6 +235,43 @@ class _SettingsPageState extends State<SettingsPage> {
     _persist();
   }
 
+  void _addSequence() {
+    final sequence = AutomationSequence(id: DateTime.now().millisecondsSinceEpoch.toString(), name: 'New Sequence');
+    setState(() => config.sequences.add(sequence));
+    _persist();
+    _openSequenceEditor(sequence);
+  }
+
+  Future<void> _openSequenceEditor(AutomationSequence sequence) async {
+    await Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => SequenceEditorPage(sequence: sequence, parameters: config.parameters),
+    ));
+    setState(() {});
+    _persist();
+  }
+
+  void _setSequenceEnabled(AutomationSequence sequence, bool value) {
+    setState(() => sequence.enabled = value);
+    _persist();
+  }
+
+  Future<void> _deleteSequence(AutomationSequence sequence) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete sequence?'),
+        content: Text('Remove "${sequence.name}" and its ${sequence.steps.length} steps?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.of(context).pop(true), child: const Text('Delete')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    setState(() => config.sequences.remove(sequence));
+    _persist();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -413,6 +451,51 @@ class _SettingsPageState extends State<SettingsPage> {
           'listens for which avatar you\'re wearing.',
           style: Theme.of(context).textTheme.bodySmall,
         ),
+        const SizedBox(height: 24),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text('Sequences', style: Theme.of(context).textTheme.titleLarge),
+            TextButton.icon(onPressed: _addSequence, icon: const Icon(Icons.add), label: const Text('New')),
+          ],
+        ),
+        Text(
+          'Script several parameters to change one after another - a little '
+          'combined automation, instead of each parameter running on its own.',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+        if (config.sequences.isEmpty)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 8),
+            child: Text('No sequences yet.'),
+          )
+        else
+          Column(
+            children: [
+              for (final sequence in config.sequences)
+                Card(
+                  margin: const EdgeInsets.symmetric(vertical: 4),
+                  child: ListTile(
+                    onTap: () => _openSequenceEditor(sequence),
+                    title: Text(sequence.name),
+                    subtitle: Text('${sequence.steps.length} steps'),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Switch(
+                          value: sequence.enabled,
+                          onChanged: (v) => _setSequenceEnabled(sequence, v),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.delete_outline),
+                          onPressed: () => _deleteSequence(sequence),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+            ],
+          ),
         const SizedBox(height: 24),
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,

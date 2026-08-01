@@ -1,12 +1,15 @@
 name: Release
 
-# builds an installer for each architecture and attaches them to a GitHub
-# Release. runs on pushing a version tag (e.g. "v1.2.0"), or manually via
-# workflow_dispatch for test runs.
+# builds a Windows installer and attaches it to a GitHub Release. runs on
+# pushing a version tag (e.g. "v1.2.0"), or manually via workflow_dispatch
+# for test runs.
 #
-# x64 covers the overwhelming majority of Windows PCs. arm64 runs on its own
-# native GitHub-hosted arm64 runner rather than cross-compiling, since the
-# Flutter CLI doesn't currently expose a Windows cross-compile flag.
+# only x64 is built - Flutter doesn't publish a native ARM64 Windows SDK to
+# cross-compile a genuinely separate ARM64 binary from (confirmed via its
+# releases_windows.json manifest, which only ever lists an x64 dart_sdk_arch).
+# this x64 build already runs fine on ARM64 Windows through the OS's built-in
+# x64 emulation, so there's no real benefit to a second "arm64" build that
+# would just be the same x64 bytes under a different label.
 # 32-bit x86 isn't offered because Flutter's Windows engine was never built
 # for it - there is no such target to produce.
 
@@ -21,39 +24,13 @@ permissions:
 
 jobs:
   build:
-    strategy:
-      matrix:
-        include:
-          - arch: x64
-            runner: windows-latest
-          - arch: arm64
-            runner: windows-11-arm
-    runs-on: ${{ matrix.runner }}
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
-      # subosito/flutter-action doesn't support arm64-hosted runners yet (it
-      # auto-detects the runner arch and then fails to resolve a matching SDK
-      # release - see subosito/flutter-action#345). Flutter only ships one
-      # Windows SDK archive anyway (x64), which runs fine under Windows'
-      # built-in x64 emulation on arm64 - the actual build output still comes
-      # out native arm64 because that's the host Visual Studio toolchain.
-      - name: Set up Flutter (x64 runner)
-        if: matrix.arch == 'x64'
-        uses: subosito/flutter-action@v2
+      - uses: subosito/flutter-action@v2
         with:
           channel: stable
-
-      - name: Set up Flutter (arm64 runner - manual install)
-        if: matrix.arch == 'arm64'
-        shell: pwsh
-        run: |
-          $manifest = Invoke-RestMethod -Uri "https://storage.googleapis.com/flutter_infra_release/releases/releases_windows.json"
-          $release = $manifest.releases | Where-Object { $_.hash -eq $manifest.current_release.stable } | Select-Object -First 1
-          $archiveUrl = "$($manifest.base_url)/$($release.archive)"
-          Invoke-WebRequest -Uri $archiveUrl -OutFile "$env:RUNNER_TEMP\flutter.zip"
-          Expand-Archive -Path "$env:RUNNER_TEMP\flutter.zip" -DestinationPath "C:\" -Force
-          Add-Content -Path $env:GITHUB_PATH -Value "C:\flutter\bin"
 
       - name: Enable Windows desktop
         run: flutter config --enable-windows-desktop
@@ -75,12 +52,12 @@ jobs:
       - name: Build portable zip
         shell: pwsh
         run: |
-          Compress-Archive -Path "build\windows\${{ matrix.arch }}\runner\Release\*" -DestinationPath "OSCSlider-${{ matrix.arch }}-portable.zip"
+          Compress-Archive -Path "build\windows\x64\runner\Release\*" -DestinationPath "OSCSlider-portable.zip"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: OSCSlider-portable-${{ matrix.arch }}
-          path: OSCSlider-${{ matrix.arch }}-portable.zip
+          name: OSCSlider-portable
+          path: OSCSlider-portable.zip
 
       - name: Install Inno Setup
         run: choco install innosetup -y --no-progress
@@ -88,12 +65,12 @@ jobs:
       - name: Build installer
         shell: cmd
         run: |
-          "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DAppArch=${{ matrix.arch }} /DAppVersion=${{ steps.version.outputs.version }} installer\oscslider.iss
+          "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DAppVersion=${{ steps.version.outputs.version }} installer\oscslider.iss
 
       - uses: actions/upload-artifact@v4
         with:
-          name: OSCSlider-Setup-${{ matrix.arch }}
-          path: installer/Output/OSCSlider-Setup-${{ matrix.arch }}.exe
+          name: OSCSlider-Setup
+          path: installer/Output/OSCSlider-Setup.exe
 
   release:
     needs: build
@@ -103,7 +80,7 @@ jobs:
         with:
           path: artifacts
 
-      - name: Create release and upload installers + portable zips
+      - name: Create release and upload installer + portable zip
         uses: softprops/action-gh-release@v2
         with:
           files: |
