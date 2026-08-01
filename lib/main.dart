@@ -1,7 +1,13 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:package_info_plus/package_info_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
 
+import 'app_updater.dart';
 import 'automation_dialog.dart';
 import 'automation_engine.dart';
 import 'config_store.dart';
@@ -73,9 +79,7 @@ class _HomePageState extends State<HomePage> {
   final _scheduleEngine = ScheduleEngine();
   final _sequenceEngine = SequenceEngine();
   Timer? _engineTimer;
-  // tracks the last time a slider/toggle was touched by hand anywhere in the
-  // app - drives "idle" schedules. starts at "now" so a fresh launch doesn't
-  // read as having been idle since 1970.
+  // last manual slider/toggle touch anywhere - drives idle schedules.
   DateTime _lastInteraction = DateTime.now();
 
   bool get _advancedMode => _config?.advancedMode ?? false;
@@ -85,15 +89,25 @@ class _HomePageState extends State<HomePage> {
     super.initState();
     _reload();
     _engineTimer = Timer.periodic(const Duration(milliseconds: 33), _tickEngines);
+    _checkForUpdateSilently();
+  }
+
+  // silent - only shows anything if a newer release is actually found.
+  Future<void> _checkForUpdateSilently() async {
+    final info = await PackageInfo.fromPlatform();
+    final update = await checkForUpdate(info.version);
+    if (update == null || !mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text('OSCSlider v${update.version} is available.'),
+      action: SnackBarAction(label: 'View', onPressed: () => launchUrl(Uri.parse(update.url))),
+    ));
   }
 
   void _tickEngines(Timer timer) {
     final config = _config;
     if (config == null) return;
-    // automations/schedules can disable themselves on completion (a ramp's
-    // Once repeat, a countdown schedule, a sequence finishing) - watch for
-    // those transitions so they can be persisted, without writing
-    // config.json on every tick just because a value changed.
+    // watch for auto-disable-on-completion so it gets persisted, without
+    // writing config.json every tick just because a value changed.
     final wasAutomationEnabled = {
       for (final p in config.parameters)
         if (p.automation != null) p.name: p.automation!.enabled,
@@ -131,10 +145,8 @@ class _HomePageState extends State<HomePage> {
     if (justFinished) _persist();
   }
 
-  // manual interaction always wins - flipping a slider/toggle by hand while
-  // its automation is running pauses (not deletes) that automation, so the
-  // user can resume it later from the same dialog instead of re-entering it.
-  // also marks the app as "not idle" for idle-triggered schedules.
+  // manual interaction pauses (not deletes) a running automation, and resets
+  // the idle clock for idle-triggered schedules.
   void _recordInteraction(ParamControl param) {
     _lastInteraction = DateTime.now();
     final auto = param.automation;
@@ -288,7 +300,7 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  void _onAvatarChanged(String avatarId) {
+  void _onAvatarChanged(String avatarId) async {
     final config = _config;
     if (config == null) return;
     if (config.activeProfile.avatarId == avatarId) return;
@@ -297,10 +309,11 @@ class _HomePageState extends State<HomePage> {
     if (matchIndex != -1) {
       _switchProfile(config.profiles[matchIndex].id);
     } else {
-      final shortId = avatarId.length > 8 ? avatarId.substring(avatarId.length - 8) : avatarId;
+      final name = await _avatarProfileName(avatarId);
+      if (!mounted) return;
       final profile = Profile(
         id: DateTime.now().millisecondsSinceEpoch.toString(),
-        name: 'Avatar $shortId',
+        name: name,
         avatarId: avatarId,
       );
       setState(() => config.profiles.add(profile));
@@ -311,6 +324,45 @@ class _HomePageState extends State<HomePage> {
       ScaffoldMessenger.of(context)
           .showSnackBar(SnackBar(content: Text('Auto mode: switched to "${config.activeProfile.name}"')));
     }
+  }
+
+  // OSC only ever gives the avatar ID, not its name - looked up separately.
+  // suffix is always added, even with a real name, to avoid collisions.
+  Future<String> _avatarProfileName(String avatarId) async {
+    final suffix = _randomSuffix();
+    final realName = await _lookupAvatarName(avatarId);
+    if (realName != null && realName.isNotEmpty) return '$realName #$suffix';
+    final shortId = avatarId.length > 8 ? avatarId.substring(avatarId.length - 8) : avatarId;
+    return 'Avatar $shortId #$suffix';
+  }
+
+  Future<String?> _lookupAvatarName(String avatarId) async {
+    try {
+      final localAppData = Platform.environment['LOCALAPPDATA'];
+      if (localAppData == null) return null;
+      // LocalLow is a sibling of Local under AppData, not nested inside it.
+      final appData = Directory(localAppData).parent.path;
+      final oscDir = Directory('$appData\\LocalLow\\VRChat\\VRChat\\OSC');
+      if (!await oscDir.exists()) return null;
+      await for (final userDir in oscDir.list()) {
+        if (userDir is! Directory) continue;
+        final file = File('${userDir.path}\\Avatars\\$avatarId.json');
+        if (!await file.exists()) continue;
+        final json = jsonDecode(await file.readAsString());
+        if (json is Map<String, dynamic> && json['name'] is String) {
+          return json['name'] as String;
+        }
+      }
+    } catch (_) {
+      // caller falls back to the id-based name.
+    }
+    return null;
+  }
+
+  String _randomSuffix() {
+    const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    final rand = Random();
+    return List.generate(4, (_) => chars[rand.nextInt(chars.length)]).join();
   }
 
   Future<void> _persist() async {

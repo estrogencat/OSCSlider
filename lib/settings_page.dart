@@ -1,11 +1,16 @@
 import 'package:flutter/material.dart';
+import 'package:package_info_plus/package_info_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
 
+import 'app_updater.dart';
 import 'config_store.dart';
 import 'custom_theme_dialog.dart';
 import 'param_control.dart';
 import 'param_form_dialog.dart';
 import 'sequence_editor_page.dart';
 import 'theme_notifier.dart';
+
+const _repoUrl = 'https://github.com/estrogencat/OSCSlider';
 
 class SettingsPage extends StatefulWidget {
   final AppConfig config;
@@ -18,6 +23,8 @@ class SettingsPage extends StatefulWidget {
 class _SettingsPageState extends State<SettingsPage> {
   late final TextEditingController _hostController;
   late final TextEditingController _portController;
+  String _appVersion = '';
+  bool _checkingUpdate = false;
 
   AppConfig get config => widget.config;
 
@@ -26,6 +33,9 @@ class _SettingsPageState extends State<SettingsPage> {
     super.initState();
     _hostController = TextEditingController(text: config.host);
     _portController = TextEditingController(text: config.port.toString());
+    PackageInfo.fromPlatform().then((info) {
+      if (mounted) setState(() => _appVersion = info.version);
+    });
   }
 
   @override
@@ -520,8 +530,48 @@ class _SettingsPageState extends State<SettingsPage> {
           icon: const Icon(Icons.delete_forever),
           label: const Text('Delete All Parameters'),
         ),
+        const SizedBox(height: 24),
+        Center(child: _buildVersionFooter(context)),
       ],
     );
+  }
+
+  Widget _buildVersionFooter(BuildContext context) {
+    final style = Theme.of(context).textTheme.bodySmall;
+    return Wrap(
+      alignment: WrapAlignment.center,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      spacing: 12,
+      children: [
+        Text(_appVersion.isEmpty ? 'OSCSlider' : 'OSCSlider v$_appVersion', style: style),
+        InkWell(
+          onTap: () => launchUrl(Uri.parse(_repoUrl)),
+          child: Text('GitHub', style: style?.copyWith(decoration: TextDecoration.underline)),
+        ),
+        _checkingUpdate
+            ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+            : InkWell(
+                onTap: _checkForUpdate,
+                child: Text('Check for updates', style: style?.copyWith(decoration: TextDecoration.underline)),
+              ),
+      ],
+    );
+  }
+
+  Future<void> _checkForUpdate() async {
+    setState(() => _checkingUpdate = true);
+    final messenger = ScaffoldMessenger.of(context);
+    final update = await checkForUpdate(_appVersion);
+    if (!mounted) return;
+    setState(() => _checkingUpdate = false);
+    if (update == null) {
+      messenger.showSnackBar(const SnackBar(content: Text('No update found.')));
+    } else {
+      messenger.showSnackBar(SnackBar(
+        content: Text('OSCSlider v${update.version} is available.'),
+        action: SnackBarAction(label: 'View', onPressed: () => launchUrl(Uri.parse(update.url))),
+      ));
+    }
   }
 
   String _typeLabel(ParamControl param) {
