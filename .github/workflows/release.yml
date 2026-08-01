@@ -1,0 +1,94 @@
+name: Release
+
+# builds an installer for each architecture and attaches them to a GitHub
+# Release. runs on pushing a version tag (e.g. "v1.2.0"), or manually via
+# workflow_dispatch for test runs.
+#
+# x64 covers the overwhelming majority of Windows PCs. arm64 runs on its own
+# native GitHub-hosted arm64 runner rather than cross-compiling, since the
+# Flutter CLI doesn't currently expose a Windows cross-compile flag.
+# 32-bit x86 isn't offered because Flutter's Windows engine was never built
+# for it - there is no such target to produce.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-latest
+          - arch: arm64
+            runner: windows-11-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Enable Windows desktop
+        run: flutter config --enable-windows-desktop
+
+      - run: flutter pub get
+
+      - run: flutter build windows --release
+
+      - name: Determine version from tag
+        id: version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_NAME" == v* ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=0.0.0-dev" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build portable zip
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "build\windows\${{ matrix.arch }}\runner\Release\*" -DestinationPath "OSCSlider-${{ matrix.arch }}-portable.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OSCSlider-portable-${{ matrix.arch }}
+          path: OSCSlider-${{ matrix.arch }}-portable.zip
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Build installer
+        shell: cmd
+        run: |
+          "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DAppArch=${{ matrix.arch }} /DAppVersion=${{ steps.version.outputs.version }} installer\oscslider.iss
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OSCSlider-Setup-${{ matrix.arch }}
+          path: installer/Output/OSCSlider-Setup-${{ matrix.arch }}.exe
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create release and upload installers + portable zips
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/**/*.exe
+            artifacts/**/*.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
