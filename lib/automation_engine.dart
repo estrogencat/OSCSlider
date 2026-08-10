@@ -24,7 +24,23 @@ class _RuntimeState {
   _RuntimeState(this.startTime);
 }
 
-/// drives every parameter's automation from a single periodic tick, computing
+// one automation to drive this tick - lets the engine equally drive a
+// parameter's own automation or a sequence's per-parameter override, each
+// with its own runtime-state key and "just finished" callback.
+class AutomationTarget {
+  final String key;
+  final ParamControl param;
+  final Automation automation;
+  final void Function()? onFinished;
+  const AutomationTarget({
+    required this.key,
+    required this.param,
+    required this.automation,
+    this.onFinished,
+  });
+}
+
+/// drives every automation target from a single periodic tick, computing
 /// each one analytically from elapsed wall-clock time rather than stepping
 /// state incrementally - so it's not sensitive to the exact tick rate.
 class AutomationEngine {
@@ -38,34 +54,43 @@ class AutomationEngine {
   void reset() => _runtime.clear();
 
   void tick(
-    List<ParamControl> parameters,
+    List<AutomationTarget> targets,
     void Function(ParamControl param, double value) onSlider,
     void Function(ParamControl param, bool value) onToggle,
   ) {
     final now = DateTime.now();
-    final liveNames = <String>{};
+    final liveKeys = <String>{};
 
-    for (final param in parameters) {
-      final auto = param.automation;
-      if (auto == null || !auto.enabled) continue;
-      liveNames.add(param.name);
-      final state = _runtime.putIfAbsent(param.name, () => _RuntimeState(now));
+    for (final target in targets) {
+      final param = target.param;
+      final auto = target.automation;
+      liveKeys.add(target.key);
+      final state = _runtime.putIfAbsent(target.key, () => _RuntimeState(now));
+
+      // startDelaySeconds holds the clock at the start line until it passes,
+      // then shifts "now" so every tick method below (which works purely off
+      // elapsed time) sees the automation start cleanly at 0, not mid-cycle.
+      final sinceStart = now.difference(state.startTime).inMicroseconds / 1e6;
+      if (sinceStart < auto.startDelaySeconds) continue;
+      final effectiveNow = auto.startDelaySeconds > 0
+          ? now.subtract(Duration(microseconds: (auto.startDelaySeconds * 1e6).round()))
+          : now;
 
       if (param.type == ParamType.slider) {
         switch (auto.kind) {
           case AutomationKind.ramp:
-            _tickRamp(param, auto, state, now, onSlider);
+            _tickRamp(target, state, effectiveNow, onSlider);
           case AutomationKind.random:
-            _tickRandomSlider(param, auto, state, now, onSlider);
+            _tickRandomSlider(param, auto, state, effectiveNow, onSlider);
           case AutomationKind.blink:
             break; // blink doesn't apply to sliders
         }
       } else if (param.type == ParamType.toggle) {
         switch (auto.kind) {
           case AutomationKind.blink:
-            _tickBlink(auto, state, now, (v) => onToggle(param, v));
+            _tickBlink(auto, state, effectiveNow, (v) => onToggle(param, v));
           case AutomationKind.random:
-            _tickRandomToggle(auto, state, now, (v) => onToggle(param, v));
+            _tickRandomToggle(auto, state, effectiveNow, (v) => onToggle(param, v));
           case AutomationKind.ramp:
             break; // ramp doesn't apply to toggles
         }
@@ -74,16 +99,17 @@ class AutomationEngine {
 
     // drop state for anything no longer live (disabled, deleted, or on a
     // profile we've switched away from) so re-enabling starts fresh.
-    _runtime.removeWhere((key, _) => !liveNames.contains(key));
+    _runtime.removeWhere((key, _) => !liveKeys.contains(key));
   }
 
   void _tickRamp(
-    ParamControl param,
-    Automation auto,
+    AutomationTarget target,
     _RuntimeState state,
     DateTime now,
     void Function(ParamControl, double) onSlider,
   ) {
+    final param = target.param;
+    final auto = target.automation;
     final duration = auto.rampDurationSeconds <= 0 ? 0.001 : auto.rampDurationSeconds;
     final count = auto.rampRepeatCount;
     double progress;
@@ -129,7 +155,7 @@ class AutomationEngine {
     final eased = _ease(auto.easing, progress.clamp(0.0, 1.0), auto);
     onSlider(param, auto.rampFrom + (auto.rampTo - auto.rampFrom) * eased);
 
-    if (finished) auto.enabled = false;
+    if (finished) target.onFinished?.call();
   }
 
   // each repeat's duration is scaled by rampRepeatSpeedFactor from the last
@@ -215,8 +241,10 @@ class AutomationEngine {
   }
 
   void _tickBlink(Automation auto, _RuntimeState state, DateTime now, void Function(bool) onToggle) {
-    final onDur = max(auto.blinkOnSeconds, 0.05);
-    final offDur = max(auto.blinkOffSeconds, 0.05);
+    // 0.001 floor only guards against a literal 0+0 making the modulo below
+    // undefined - not a meaningful minimum duration otherwise.
+    final onDur = max(auto.blinkOnSeconds, 0.001);
+    final offDur = max(auto.blinkOffSeconds, 0.001);
     final elapsed = now.difference(state.startTime).inMicroseconds / 1e6;
     final phase = elapsed % (onDur + offDur);
     final isOn = phase < onDur;

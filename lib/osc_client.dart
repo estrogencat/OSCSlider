@@ -1,6 +1,8 @@
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'crash_log.dart';
+
 class OscSendException implements Exception {
   final String message;
   OscSendException(this.message);
@@ -155,13 +157,21 @@ class OscClient {
     return bytes;
   }
 
+  // sends fire hundreds of times a second (every automation tick, every
+  // slider drag) and are almost always unawaited - OSC is inherently
+  // fire-and-forget, so a failed send should just be dropped, not surface as
+  // an unhandled async error that could take the whole app down.
   Future<void> _send(String address, Uint8List typeTagBytes, Uint8List argBytes) async {
-    _socket ??= await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
-    final out = BytesBuilder();
-    out.add(_oscString(address));
-    out.add(typeTagBytes);
-    out.add(argBytes);
-    _socket!.send(out.toBytes(), InternetAddress(host), port);
+    try {
+      _socket ??= await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
+      final out = BytesBuilder();
+      out.add(_oscString(address));
+      out.add(typeTagBytes);
+      out.add(argBytes);
+      _socket!.send(out.toBytes(), InternetAddress(host), port);
+    } catch (e, st) {
+      await CrashLog.record(e, st, context: 'OscClient send $address');
+    }
   }
 
   // null-terminated ASCII string, padded to a 4-byte boundary per the OSC spec.

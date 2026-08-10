@@ -55,6 +55,14 @@ class Automation {
   double blinkOnSeconds;
   double blinkOffSeconds;
 
+  // null = purely manual (the Enabled switch is the only control).
+  ParamTrigger? trigger;
+
+  // sequence-scoped automations only - delays this automation's start by N
+  // seconds after the sequence begins, so several can be staggered instead
+  // of starting in lockstep. ignored for a parameter's own global automation.
+  double startDelaySeconds;
+
   Automation({
     this.enabled = false,
     this.kind = AutomationKind.ramp,
@@ -76,6 +84,8 @@ class Automation {
     this.randomSmooth = true,
     this.blinkOnSeconds = 1.0,
     this.blinkOffSeconds = 1.0,
+    this.trigger,
+    this.startDelaySeconds = 0.0,
   }) : customCurvePoints = customCurvePoints ?? [const Offset(0, 0), const Offset(1, 1)];
 
   factory Automation.fromJson(Map<String, dynamic> json) {
@@ -115,6 +125,10 @@ class Automation {
       randomSmooth: (json['randomSmooth'] as bool?) ?? true,
       blinkOnSeconds: (json['blinkOnSeconds'] as num?)?.toDouble() ?? 1.0,
       blinkOffSeconds: (json['blinkOffSeconds'] as num?)?.toDouble() ?? 1.0,
+      trigger: (json['trigger'] as Map<String, dynamic>?) == null
+          ? null
+          : ParamTrigger.fromJson(json['trigger'] as Map<String, dynamic>),
+      startDelaySeconds: (json['startDelaySeconds'] as num?)?.toDouble() ?? 0.0,
     );
   }
 
@@ -126,6 +140,7 @@ class Automation {
         AutomationKind.random => 'random',
         AutomationKind.blink => 'blink',
       },
+      'startDelaySeconds': startDelaySeconds,
       'rampFrom': rampFrom,
       'rampTo': rampTo,
       'rampDurationSeconds': rampDurationSeconds,
@@ -153,6 +168,7 @@ class Automation {
       'randomSmooth': randomSmooth,
       'blinkOnSeconds': blinkOnSeconds,
       'blinkOffSeconds': blinkOffSeconds,
+      if (trigger != null) 'trigger': trigger!.toJson(),
     };
   }
 }
@@ -239,6 +255,96 @@ class ParamSchedule {
       'targetValue': targetValue,
       'targetBool': targetBool,
       'revertAfterSeconds': revertAfterSeconds,
+    };
+  }
+}
+
+// turnsOn/turnsOff fire once on that transition; whileOn/whileOff gate the
+// target's enabled state to continuously match the watched toggle.
+enum ToggleTriggerCondition { turnsOn, turnsOff, whileOn, whileOff }
+
+// above/below/inRange/outOfRange gate continuously; crossesAbove/crossesBelow
+// fire once at the crossing instant.
+enum RangeTriggerCondition { above, below, crossesAbove, crossesBelow, inRange, outOfRange }
+
+// starts (or, for gate conditions, continuously holds) an Automation or
+// AutomationSequence based on another parameter's live value, instead of
+// only being switched on by hand.
+class ParamTrigger {
+  bool enabled;
+  String watchedParamName;
+
+  // used when the watched parameter is a toggle.
+  ToggleTriggerCondition toggleCondition;
+
+  // used when the watched parameter is a slider.
+  RangeTriggerCondition rangeCondition;
+  double threshold;
+  double rangeMin;
+  double rangeMax;
+
+  // "fires once" pulse conditions only - fires every Nth pulse rather than
+  // every one (1 = every pulse). gate conditions ignore this entirely.
+  int requiredHits;
+
+  ParamTrigger({
+    this.enabled = false,
+    this.watchedParamName = '',
+    this.toggleCondition = ToggleTriggerCondition.turnsOn,
+    this.rangeCondition = RangeTriggerCondition.above,
+    this.threshold = 0.5,
+    this.rangeMin = 0.25,
+    this.rangeMax = 0.75,
+    this.requiredHits = 1,
+  });
+
+  factory ParamTrigger.fromJson(Map<String, dynamic> json) {
+    return ParamTrigger(
+      enabled: (json['enabled'] as bool?) ?? false,
+      watchedParamName: (json['watchedParamName'] as String?) ?? '',
+      toggleCondition: switch (json['toggleCondition'] as String?) {
+        'turnsOff' => ToggleTriggerCondition.turnsOff,
+        'whileOn' => ToggleTriggerCondition.whileOn,
+        'whileOff' => ToggleTriggerCondition.whileOff,
+        _ => ToggleTriggerCondition.turnsOn,
+      },
+      rangeCondition: switch (json['rangeCondition'] as String?) {
+        'below' => RangeTriggerCondition.below,
+        'crossesAbove' => RangeTriggerCondition.crossesAbove,
+        'crossesBelow' => RangeTriggerCondition.crossesBelow,
+        'inRange' => RangeTriggerCondition.inRange,
+        'outOfRange' => RangeTriggerCondition.outOfRange,
+        _ => RangeTriggerCondition.above,
+      },
+      threshold: (json['threshold'] as num?)?.toDouble() ?? 0.5,
+      rangeMin: (json['rangeMin'] as num?)?.toDouble() ?? 0.25,
+      rangeMax: (json['rangeMax'] as num?)?.toDouble() ?? 0.75,
+      requiredHits: (json['requiredHits'] as num?)?.toInt() ?? 1,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'enabled': enabled,
+      'watchedParamName': watchedParamName,
+      'toggleCondition': switch (toggleCondition) {
+        ToggleTriggerCondition.turnsOn => 'turnsOn',
+        ToggleTriggerCondition.turnsOff => 'turnsOff',
+        ToggleTriggerCondition.whileOn => 'whileOn',
+        ToggleTriggerCondition.whileOff => 'whileOff',
+      },
+      'rangeCondition': switch (rangeCondition) {
+        RangeTriggerCondition.above => 'above',
+        RangeTriggerCondition.below => 'below',
+        RangeTriggerCondition.crossesAbove => 'crossesAbove',
+        RangeTriggerCondition.crossesBelow => 'crossesBelow',
+        RangeTriggerCondition.inRange => 'inRange',
+        RangeTriggerCondition.outOfRange => 'outOfRange',
+      },
+      'threshold': threshold,
+      'rangeMin': rangeMin,
+      'rangeMax': rangeMax,
+      'requiredHits': requiredHits,
     };
   }
 }
@@ -337,6 +443,23 @@ class ParamControl {
 // the seed color the app launches with before any config/preference is loaded.
 const defaultThemeSeedColor = Color(0xFF6750A4);
 
+// simple mode shows 3 decimal places (e.g. "1.234"); advanced mode shows full
+// precision. either way this only affects the textbox display - the value
+// actually stored/sent over OSC always keeps full precision.
+String formatParamNumber(double v, bool advanced) {
+  if (advanced) {
+    if (v == v.roundToDouble()) return v.toStringAsFixed(0);
+    return v.toString();
+  }
+  return v.toStringAsFixed(3);
+}
+
+// most parameter names are a bare suffix under VRChat's avatar-parameters
+// root; typing a full path starting with "/" sends to that address exactly,
+// unrestricted.
+String oscAddressFor(ParamControl param) =>
+    param.name.startsWith('/') ? param.name : '/avatar/parameters/${param.name}';
+
 // setValue: snaps (or, for sliders, glides over transitionSeconds) a
 // parameter to a target and then advances. wait: a pure pause with no
 // parameter action, for spacing steps out.
@@ -395,6 +518,13 @@ class AutomationSequence {
   // only used when repeatMode is loop - 0 means repeat forever.
   int repeatCount;
   List<SequenceStep> steps;
+  // null = purely manual (the Running switch is the only control).
+  ParamTrigger? trigger;
+  // per-parameter automations owned by this sequence, not the parameter -
+  // separate from that parameter's own (global) automation, so configuring
+  // one here never touches or enables the other. runs continuously for as
+  // long as this sequence is enabled/running, keyed by parameter name.
+  Map<String, Automation> paramAutomations;
 
   AutomationSequence({
     required this.id,
@@ -403,10 +533,14 @@ class AutomationSequence {
     this.repeatMode = SequenceRepeatMode.once,
     this.repeatCount = 0,
     List<SequenceStep>? steps,
-  }) : steps = steps ?? [];
+    this.trigger,
+    Map<String, Automation>? paramAutomations,
+  })  : steps = steps ?? [],
+        paramAutomations = paramAutomations ?? {};
 
   factory AutomationSequence.fromJson(Map<String, dynamic> json) {
     final rawSteps = (json['steps'] as List?) ?? const [];
+    final rawParamAutomations = json['paramAutomations'] as Map<String, dynamic>?;
     return AutomationSequence(
       id: json['id'] as String,
       name: (json['name'] as String?) ?? 'Sequence',
@@ -414,6 +548,11 @@ class AutomationSequence {
       repeatMode: (json['repeatMode'] as String?) == 'loop' ? SequenceRepeatMode.loop : SequenceRepeatMode.once,
       repeatCount: (json['repeatCount'] as num?)?.toInt() ?? 0,
       steps: rawSteps.cast<Map<String, dynamic>>().map(SequenceStep.fromJson).toList(),
+      trigger: (json['trigger'] as Map<String, dynamic>?) == null
+          ? null
+          : ParamTrigger.fromJson(json['trigger'] as Map<String, dynamic>),
+      paramAutomations:
+          rawParamAutomations?.map((k, v) => MapEntry(k, Automation.fromJson(v as Map<String, dynamic>))),
     );
   }
 
@@ -425,8 +564,23 @@ class AutomationSequence {
       'repeatMode': repeatMode == SequenceRepeatMode.loop ? 'loop' : 'once',
       'repeatCount': repeatCount,
       'steps': steps.map((s) => s.toJson()).toList(),
+      if (trigger != null) 'trigger': trigger!.toJson(),
+      if (paramAutomations.isNotEmpty)
+        'paramAutomations': paramAutomations.map((k, v) => MapEntry(k, v.toJson())),
     };
   }
+}
+
+/// true if [seq] is actually driving [paramName] right now via its
+/// paramAutomations override - enabled sequence, entry itself enabled (not
+/// paused), and not superseded by that sequence's own step script targeting
+/// the same parameter. shared by the main screen's automation button and the
+/// master switch so both agree on the same definition.
+bool sequenceActivelyDrivesParam(AutomationSequence seq, String paramName) {
+  if (!seq.enabled) return false;
+  final entry = seq.paramAutomations[paramName];
+  if (entry == null || !entry.enabled) return false;
+  return !seq.steps.any((s) => s.kind == SequenceStepKind.setValue && s.paramName == paramName);
 }
 
 // a profile is one avatar's set of parameters. avatarId is set when the
@@ -438,6 +592,12 @@ class Profile {
   String? avatarId;
   final List<ParamControl> parameters;
   final List<AutomationSequence> sequences;
+  // a static "Save Parameters" snapshot rather than a regular avatar
+  // profile - never picked/created by auto mode, never touched by live
+  // parameter reconciliation, and not selectable as the active profile;
+  // only manual edits (or its Apply button, which pushes its saved values
+  // onto the currently active profile) can change anything through it.
+  bool isSnapshot;
 
   Profile({
     required this.id,
@@ -445,6 +605,7 @@ class Profile {
     this.avatarId,
     List<ParamControl>? parameters,
     List<AutomationSequence>? sequences,
+    this.isSnapshot = false,
   })  : parameters = parameters ?? [],
         sequences = sequences ?? [];
 
@@ -457,6 +618,7 @@ class Profile {
       avatarId: json['avatarId'] as String?,
       parameters: rawParams.cast<Map<String, dynamic>>().map(ParamControl.fromJson).toList(),
       sequences: rawSequences.cast<Map<String, dynamic>>().map(AutomationSequence.fromJson).toList(),
+      isSnapshot: (json['isSnapshot'] as bool?) ?? false,
     );
   }
 
@@ -467,6 +629,7 @@ class Profile {
       if (avatarId != null) 'avatarId': avatarId,
       'parameters': parameters.map((p) => p.toJson()).toList(),
       'sequences': sequences.map((s) => s.toJson()).toList(),
+      if (isSnapshot) 'isSnapshot': true,
     };
   }
 }
@@ -475,8 +638,34 @@ class AppConfig {
   String host;
   int port;
   Color themeSeedColor;
-  bool advancedMode;
   bool autoProfileMode;
+
+  // a standalone bottom-of-settings toggle rather than a "hidden feature" -
+  // meant to grow more sub-features over time (currently: full-precision
+  // slider display, and treating any OSCQuery service as usable for
+  // discovery/fetch instead of requiring one that self-identifies as VRChat).
+  bool developerMode;
+  bool developerModeWarningDismissed;
+  // the switch itself stays hidden until unlocked by tapping the version
+  // number 5 times - once true, stays true until config.json is wiped.
+  bool developerModeUnlocked;
+
+  // hidden-by-default features - off unless explicitly unlocked in Settings.
+  bool showAutomationMasterSwitch;
+  // true = every automated parameter; false = only automationMasterSwitchParams.
+  bool automationMasterSwitchAll;
+  List<String> automationMasterSwitchParams;
+
+  // discover popup's "highlight active parameters" listener stops promoting
+  // a parameter to the top once it's changed this many times within one
+  // second - keeps constantly-firing animator/tracking params from
+  // permanently burying anything else. Settings > Miscellaneous.
+  int liveParamNoiseThreshold;
+
+  // how long to wait on VRChat's OSCQuery server before falling back to
+  // something else - it's been observed to hang outright for some avatars.
+  // Settings > Miscellaneous, developer mode only.
+  int oscQueryFetchTimeoutSeconds;
 
   final List<Profile> profiles;
   String activeProfileId;
@@ -488,6 +677,10 @@ class AppConfig {
   Color? tertiaryOverride;
   Color? errorOverride;
 
+  // full-precision slider display is entirely a developer-mode effect now -
+  // no separate switch or persisted state for it.
+  bool get advancedMode => developerMode;
+
   AppConfig({
     required this.host,
     required this.port,
@@ -495,15 +688,23 @@ class AppConfig {
     List<Profile>? profiles,
     String? activeProfileId,
     this.themeSeedColor = defaultThemeSeedColor,
-    this.advancedMode = false,
     this.autoProfileMode = false,
+    this.developerMode = false,
+    this.developerModeWarningDismissed = false,
+    this.developerModeUnlocked = false,
+    this.showAutomationMasterSwitch = false,
+    this.automationMasterSwitchAll = true,
+    List<String>? automationMasterSwitchParams,
+    this.liveParamNoiseThreshold = 10,
+    this.oscQueryFetchTimeoutSeconds = 5,
     this.primaryOverride,
     this.secondaryOverride,
     this.tertiaryOverride,
     this.errorOverride,
   })  : profiles = profiles ?? [Profile(id: 'default', name: 'Default', parameters: parameters ?? [])],
         activeProfileId = activeProfileId ??
-            (profiles != null && profiles.isNotEmpty ? profiles.first.id : 'default');
+            (profiles != null && profiles.isNotEmpty ? profiles.first.id : 'default'),
+        automationMasterSwitchParams = automationMasterSwitchParams ?? [];
 
   Profile get activeProfile => profiles.firstWhere(
         (p) => p.id == activeProfileId,
@@ -540,11 +741,23 @@ class AppConfig {
       profiles: profiles,
       activeProfileId: activeProfileId,
       themeSeedColor: colorFromHex(json['themeColor'] as String?) ?? defaultThemeSeedColor,
-      advancedMode: (json['advancedMode'] as bool?) ?? false,
       // off by default for anyone upgrading from a pre-auto-mode config, and
       // off on a brand new config too - this is an explicit opt-in feature
       // since it passively listens for which avatar you're wearing.
       autoProfileMode: (json['autoProfileMode'] as bool?) ?? false,
+      // migrates a pre-developer-mode config's standalone "advancedMode" flag
+      // so upgrading doesn't silently change the slider display precision -
+      // also unlocking the switch itself, so it isn't left on but invisible.
+      developerMode: (json['developerMode'] as bool?) ?? (json['advancedMode'] as bool?) ?? false,
+      developerModeWarningDismissed: (json['developerModeWarningDismissed'] as bool?) ?? false,
+      developerModeUnlocked:
+          (json['developerModeUnlocked'] as bool?) ?? (json['advancedMode'] as bool?) ?? false,
+      showAutomationMasterSwitch: (json['showAutomationMasterSwitch'] as bool?) ?? false,
+      automationMasterSwitchAll: (json['automationMasterSwitchAll'] as bool?) ?? true,
+      automationMasterSwitchParams:
+          ((json['automationMasterSwitchParams'] as List?) ?? const []).cast<String>(),
+      liveParamNoiseThreshold: (json['liveParamNoiseThreshold'] as num?)?.toInt() ?? 10,
+      oscQueryFetchTimeoutSeconds: (json['oscQueryFetchTimeoutSeconds'] as num?)?.toInt() ?? 5,
       primaryOverride: colorFromHex(json['primaryOverride'] as String?),
       secondaryOverride: colorFromHex(json['secondaryOverride'] as String?),
       tertiaryOverride: colorFromHex(json['tertiaryOverride'] as String?),
@@ -557,8 +770,15 @@ class AppConfig {
       'host': host,
       'port': port,
       'themeColor': colorToHex(themeSeedColor),
-      'advancedMode': advancedMode,
       'autoProfileMode': autoProfileMode,
+      'developerMode': developerMode,
+      'developerModeWarningDismissed': developerModeWarningDismissed,
+      'developerModeUnlocked': developerModeUnlocked,
+      'showAutomationMasterSwitch': showAutomationMasterSwitch,
+      'automationMasterSwitchAll': automationMasterSwitchAll,
+      'automationMasterSwitchParams': automationMasterSwitchParams,
+      'liveParamNoiseThreshold': liveParamNoiseThreshold,
+      'oscQueryFetchTimeoutSeconds': oscQueryFetchTimeoutSeconds,
       if (primaryOverride != null) 'primaryOverride': colorToHex(primaryOverride!),
       if (secondaryOverride != null) 'secondaryOverride': colorToHex(secondaryOverride!),
       if (tertiaryOverride != null) 'tertiaryOverride': colorToHex(tertiaryOverride!),

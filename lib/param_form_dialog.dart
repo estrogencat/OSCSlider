@@ -95,8 +95,11 @@ class _ParamFormDialogState extends State<ParamFormDialog> {
               TextField(
                 controller: _nameController,
                 decoration: const InputDecoration(
-                  labelText: 'OSC address (after /avatar/parameters/)',
-                  hintText: 'e.g. VF67_Mayu/Purr',
+                  labelText: 'OSC address',
+                  hintText: 'e.g. VF67_Mayu/Purr, or /any/full/osc/address',
+                  helperText: 'No leading "/" is shorthand for /avatar/parameters/<this>. '
+                      'Start with "/" to send to that exact address instead.',
+                  helperMaxLines: 2,
                 ),
               ),
               const SizedBox(height: 8),
