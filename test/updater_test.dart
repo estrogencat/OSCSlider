@@ -95,10 +95,21 @@ void main() {
     late HttpServer server;
     final payload = utf8.encode('pretend installer ' * 5000);
     var sums = '';
+    // path -> how many more requests to answer with a 500.
+    final failures = <String, int>{};
 
     setUp(() async {
+      failures.clear();
+      updateRetryPauses = const [Duration.zero, Duration.zero, Duration.zero];
       server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       server.listen((req) {
+        final fail = failures[req.uri.path] ?? 0;
+        if (fail > 0) {
+          failures[req.uri.path] = fail - 1;
+          req.response.statusCode = 500;
+          req.response.close();
+          return;
+        }
         final body = switch (req.uri.path) {
           '/OSCSlider-Setup.exe' => payload,
           '/SHA256SUMS.txt' => utf8.encode(sums),
@@ -154,6 +165,26 @@ void main() {
       final dir = Directory('${Directory.systemTemp.path}${Platform.pathSeparator}OSCSlider-update');
       final leftovers = dir.existsSync() ? dir.listSync().where((f) => f.path.contains('9.9.9-test')) : const [];
       expect(leftovers, isEmpty);
+    });
+
+    test('rides out a few server errors', () async {
+      sums = '${sha256.convert(payload)}  OSCSlider-Setup.exe\n';
+      failures['/SHA256SUMS.txt'] = 1;
+      failures['/OSCSlider-Setup.exe'] = 2;
+      final i = info();
+      final file = await downloadUpdate(i, i.assets.first, InstallKind.windowsInstaller);
+      expect(file.readAsBytesSync(), payload);
+      file.deleteSync();
+    });
+
+    test('gives up with a clear message when the errors keep coming', () async {
+      sums = '${sha256.convert(payload)}  OSCSlider-Setup.exe\n';
+      failures['/OSCSlider-Setup.exe'] = 99;
+      final i = info();
+      await expectLater(
+        downloadUpdate(i, i.assets.first, InstallKind.windowsInstaller),
+        throwsA(isA<UpdateException>().having((e) => e.message, 'message', contains('GitHub had trouble sending OSCSlider-Setup.exe (HTTP 500)'))),
+      );
     });
   });
 }

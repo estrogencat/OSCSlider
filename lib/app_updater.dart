@@ -217,28 +217,30 @@ Future<File> downloadUpdate(
   final client = _client();
   try {
     await dest.parent.create(recursive: true);
-    final expected = await _expectedHash(client, info, asset);
-    final response = await (await client.getUrl(asset.url)).close().timeout(const Duration(seconds: 20));
-    if (response.statusCode != 200) throw UpdateException('download failed (HTTP ${response.statusCode})');
-    final total = response.contentLength > 0 ? response.contentLength : asset.size;
-    final sink = part.openWrite();
-    final hashSink = _DigestSink();
-    final hasher = sha256.startChunkedConversion(hashSink);
-    var received = 0;
-    try {
-      await for (final chunk in response.timeout(const Duration(seconds: 30))) {
-        if (cancel?.cancelled ?? false) throw UpdateException('download cancelled');
-        sink.add(chunk);
-        hasher.add(chunk);
-        received += chunk.length;
-        onProgress?.call(received, total);
+    final expected = await _expectedHash(client, info, asset, cancel);
+    final digest = await _retrying(asset.name, cancel, () async {
+      final response = await _get(client, asset.url, asset.name, const Duration(seconds: 20));
+      final total = response.contentLength > 0 ? response.contentLength : asset.size;
+      final sink = part.openWrite();
+      final hashSink = _DigestSink();
+      final hasher = sha256.startChunkedConversion(hashSink);
+      var received = 0;
+      try {
+        await for (final chunk in response.timeout(const Duration(seconds: 30))) {
+          if (cancel?.cancelled ?? false) throw UpdateException('download cancelled');
+          sink.add(chunk);
+          hasher.add(chunk);
+          received += chunk.length;
+          onProgress?.call(received, total);
+        }
+      } finally {
+        await sink.close();
       }
-    } finally {
-      await sink.close();
-    }
-    hasher.close();
-    if (total > 0 && received != total) throw UpdateException('download was cut off, try again');
-    if (expected != null && hashSink.value.toString() != expected) {
+      hasher.close();
+      if (total > 0 && received != total) throw const _Transient('the download was cut off');
+      return hashSink.value.toString();
+    });
+    if (expected != null && digest != expected) {
       throw UpdateException('the download didn\'t match its checksum, so it wasn\'t used');
     }
     if (dest.existsSync()) dest.deleteSync();
@@ -246,15 +248,56 @@ Future<File> downloadUpdate(
   } on UpdateException {
     _tryDelete(part);
     rethrow;
-  } on TimeoutException {
-    _tryDelete(part);
-    throw UpdateException('the download stalled, try again');
   } catch (e) {
     _tryDelete(part);
     throw UpdateException('download failed: $e');
   } finally {
     client.close(force: true);
   }
+}
+
+/// a failure that's usually gone a moment later: a 5xx from GitHub's file
+/// servers, a dropped connection, a stall.
+class _Transient implements Exception {
+  final String reason;
+  const _Transient(this.reason);
+}
+
+/// pauses between download retries (tests shorten them).
+List<Duration> updateRetryPauses = const [Duration(seconds: 1), Duration(seconds: 3), Duration(seconds: 6)];
+
+// runs [attempt], retrying transient failures with a growing pause.
+Future<T> _retrying<T>(String what, UpdateCancelToken? cancel, Future<T> Function() attempt) async {
+  final pauses = updateRetryPauses;
+  for (var i = 0;; i++) {
+    String reason;
+    try {
+      return await attempt();
+    } on _Transient catch (e) {
+      reason = e.reason;
+    } on SocketException catch (e) {
+      reason = 'connection problem: ${e.osError?.message ?? e.message}';
+    } on HttpException catch (e) {
+      reason = 'connection problem: ${e.message}';
+    } on TimeoutException {
+      reason = 'it stalled';
+    }
+    if (cancel?.cancelled ?? false) throw UpdateException('download cancelled');
+    if (i >= pauses.length) {
+      throw UpdateException('GitHub had trouble sending $what ($reason). Try again in a minute, or use the release page.');
+    }
+    await Future.delayed(pauses[i]);
+  }
+}
+
+// a 200 response, or a _Transient / UpdateException saying why not.
+Future<HttpClientResponse> _get(HttpClient client, Uri url, String what, Duration timeout) async {
+  final response = await (await client.getUrl(url)).close().timeout(timeout);
+  final code = response.statusCode;
+  if (code == 200) return response;
+  await response.drain<void>().catchError((_) {});
+  if (code >= 500 || code == 429 || code == 408) throw _Transient('HTTP $code');
+  throw UpdateException('couldn\'t download $what (HTTP $code)');
 }
 
 File _downloadTarget(ReleaseAsset asset, InstallKind kind, String version) {
@@ -288,12 +331,13 @@ void _tryDelete(File f) {
 }
 
 // null when the release has no checksum list (older releases).
-Future<String?> _expectedHash(HttpClient client, UpdateInfo info, ReleaseAsset asset) async {
+Future<String?> _expectedHash(HttpClient client, UpdateInfo info, ReleaseAsset asset, UpdateCancelToken? cancel) async {
   final sums = info.assets.where((a) => a.name == 'SHA256SUMS.txt').firstOrNull;
   if (sums == null) return null;
-  final response = await (await client.getUrl(sums.url)).close().timeout(const Duration(seconds: 15));
-  if (response.statusCode != 200) throw UpdateException('couldn\'t fetch the checksums (HTTP ${response.statusCode})');
-  final text = await response.transform(utf8.decoder).join();
+  final text = await _retrying(sums.name, cancel, () async {
+    final response = await _get(client, sums.url, sums.name, const Duration(seconds: 15));
+    return response.transform(utf8.decoder).join().timeout(const Duration(seconds: 15));
+  });
   for (final line in const LineSplitter().convert(text)) {
     final m = RegExp(r'^([0-9a-fA-F]{64})\s+\*?(.+)$').firstMatch(line.trim());
     if (m != null && m.group(2) == asset.name) return m.group(1)!.toLowerCase();
