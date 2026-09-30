@@ -34,35 +34,6 @@ jobs:
         with:
           channel: stable
           cache: true
-      - uses: actions/setup-java@v4
-        if: matrix.platform == 'apk'
-        with:
-          distribution: temurin
-          java-version: 17
-
-      # a stable signing key lets new APKs install over old ones. without the
-      # secrets it's signed with a throwaway debug key: fine for testing, but
-      # each build then has to be uninstalled before the next goes on.
-      - name: Android signing key
-        if: matrix.platform == 'apk'
-        env:
-          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: |
-          if [ -z "$KEYSTORE_BASE64" ]; then
-            echo "::warning::no ANDROID_KEYSTORE_BASE64 secret, so the APK is signed with a debug key"
-            exit 0
-          fi
-          echo "$KEYSTORE_BASE64" | base64 -d > android/app/release.jks
-          {
-            echo "storeFile=release.jks"
-            echo "storePassword=$KEYSTORE_PASSWORD"
-            echo "keyAlias=$KEY_ALIAS"
-            echo "keyPassword=${KEY_PASSWORD:-$KEYSTORE_PASSWORD}"
-          } > android/key.properties
-
       - run: flutter pub get
       - run: flutter analyze
       - run: flutter test
@@ -117,6 +88,35 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build libgtk-3-dev liblzma-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+
+      - uses: actions/setup-java@v4
+        if: matrix.platform == 'apk'
+        with:
+          distribution: temurin
+          java-version: 17
+
+      # a stable signing key lets new APKs install over old ones. without the
+      # secrets it's signed with a throwaway debug key: fine for testing, but
+      # each build then has to be uninstalled before the next goes on.
+      - name: Android signing key
+        if: matrix.platform == 'apk'
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::warning::no ANDROID_KEYSTORE_BASE64 secret, so the APK is signed with a debug key"
+            exit 0
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > android/app/release.jks
+          {
+            echo "storeFile=release.jks"
+            echo "storePassword=$KEYSTORE_PASSWORD"
+            echo "keyAlias=$KEY_ALIAS"
+            echo "keyPassword=${KEY_PASSWORD:-$KEYSTORE_PASSWORD}"
+          } > android/key.properties
 
       - run: flutter pub get
 
