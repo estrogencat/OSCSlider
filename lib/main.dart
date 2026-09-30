@@ -24,6 +24,7 @@ import 'sequence_editor_page.dart';
 import 'sequences_page.dart';
 import 'settings_page.dart';
 import 'theme_notifier.dart';
+import 'tutorial.dart';
 import 'update_dialog.dart';
 
 void main() {
@@ -31,21 +32,18 @@ void main() {
   // frequently and mostly unawaited - a transient error there would
   // otherwise be an uncaught async error that silently kills the app with
   // no trace. this is the last-resort net; see CrashLog for where it lands.
-  runZonedGuarded(
-    () {
-      WidgetsFlutterBinding.ensureInitialized();
-      FlutterError.onError = (details) {
-        FlutterError.presentError(details);
-        CrashLog.record(details.exception, details.stack, context: 'FlutterError');
-      };
-      PlatformDispatcher.instance.onError = (error, stack) {
-        CrashLog.record(error, stack, context: 'platform');
-        return true;
-      };
-      runApp(const OscSliderApp());
-    },
-    (error, stack) => CrashLog.record(error, stack, context: 'uncaught'),
-  );
+  runZonedGuarded(() {
+    WidgetsFlutterBinding.ensureInitialized();
+    FlutterError.onError = (details) {
+      FlutterError.presentError(details);
+      CrashLog.record(details.exception, details.stack, context: 'FlutterError');
+    };
+    PlatformDispatcher.instance.onError = (error, stack) {
+      CrashLog.record(error, stack, context: 'platform');
+      return true;
+    };
+    runApp(const OscSliderApp());
+  }, (error, stack) => CrashLog.record(error, stack, context: 'uncaught'));
 }
 
 class OscSliderApp extends StatelessWidget {
@@ -87,6 +85,16 @@ class _HomePageState extends State<HomePage> {
   final _searchController = TextEditingController();
   final Set<String> _collapsedCategories = {};
   AppLifecycleListener? _lifecycle;
+  bool _touring = false;
+  final _tourChipKey = GlobalKey();
+  final _tourDiscoverKey = GlobalKey();
+  final _tourProfileKey = GlobalKey();
+  final _tourCardKey = GlobalKey();
+  final _tourAutomationKey = GlobalKey();
+  final _tourAddKey = GlobalKey();
+  final _tourSequencesKey = GlobalKey();
+  final _tourMoreKey = GlobalKey();
+  final _tourSettingsKey = GlobalKey();
 
   @override
   void initState() {
@@ -128,6 +136,9 @@ class _HomePageState extends State<HomePage> {
           live.replaceConfig(config);
         }
       });
+      if (widget.startServices && !config.tutorialSeen) {
+        WidgetsBinding.instance.addPostFrameCallback((_) => _startTour());
+      }
       if (widget.startServices) {
         // reconciling again once the service is up lets forwarding skip
         // this app's own (now known) ports.
@@ -156,14 +167,16 @@ class _HomePageState extends State<HomePage> {
       if (isDevVersion(current)) return;
       final update = await checkForUpdate(current, includePrereleases: live.config.includePrereleaseUpdates);
       if (update == null || update.version == live.config.skippedUpdateVersion || !mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('OSCSlider v${update.version} is available.'),
-        duration: const Duration(seconds: 10),
-        action: SnackBarAction(
-          label: 'Details',
-          onPressed: () => showUpdateDialog(context, info: update, currentVersion: current, live: live),
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('OSCSlider v${update.version} is available.'),
+          duration: const Duration(seconds: 10),
+          action: SnackBarAction(
+            label: 'Details',
+            onPressed: () => showUpdateDialog(context, info: update, currentVersion: current, live: live),
+          ),
         ),
-      ));
+      );
     } catch (_) {}
   }
 
@@ -185,9 +198,7 @@ class _HomePageState extends State<HomePage> {
             'both will fight over the same parameters, and they\'ll overwrite each other\'s '
             'config.json. Close one of them if that isn\'t what you meant.',
           ),
-          actions: [
-            TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Dismiss')),
-          ],
+          actions: [TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Dismiss'))],
         ),
       );
     } catch (_) {
@@ -290,10 +301,10 @@ class _HomePageState extends State<HomePage> {
                           !seq.enabled
                               ? 'Sequence not running'
                               : !(seq.paramAutomations[param.name]?.enabled ?? false)
-                                  ? 'Paused in this sequence'
-                                  : sequenceActivelyDrivesParam(seq, param.name)
-                                      ? 'Running'
-                                      : 'Suppressed - a step in this sequence also targets this parameter',
+                              ? 'Paused in this sequence'
+                              : sequenceActivelyDrivesParam(seq, param.name)
+                              ? 'Running'
+                              : 'Suppressed - a step in this sequence also targets this parameter',
                         ),
                         trailing: Row(
                           mainAxisSize: MainAxisSize.min,
@@ -357,7 +368,11 @@ class _HomePageState extends State<HomePage> {
   Future<void> _openSequenceEditor(AutomationSequence sequence) async {
     final live = _live;
     if (live == null) return;
-    await Navigator.of(context).push(MaterialPageRoute(builder: (_) => SequenceEditorPage(sequence: sequence, live: live)));
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => SequenceEditorPage(sequence: sequence, live: live),
+      ),
+    );
     live.persist();
     live.reconcile();
   }
@@ -365,9 +380,111 @@ class _HomePageState extends State<HomePage> {
   Future<void> _openSettings() async {
     final live = _live;
     if (live == null) return;
-    await Navigator.of(context).push(MaterialPageRoute(builder: (_) => SettingsPage(live: live)));
+    final result = await Navigator.of(
+      context,
+    ).push<String>(MaterialPageRoute(builder: (_) => SettingsPage(live: live)));
     live.persist();
     live.reconcile();
+    if (result == 'tour') _startTour();
+  }
+
+  // ---- tour ----
+
+  Future<void> _startTour() async {
+    final live = _live;
+    if (live == null || _touring || !mounted) return;
+    _touring = true;
+    try {
+      await showTour(context, [
+        const TourStep(
+          icon: Icons.waving_hand_outlined,
+          title: 'Welcome to OSCSlider!',
+          body:
+              'OSCSlider lets you control your VRChat avatar from your computer.\n\n'
+              'This quick tour shows you what each button does. It takes about a minute.',
+        ),
+        TourStep(
+          target: _tourChipKey,
+          icon: Icons.wifi_tethering,
+          title: 'Connection',
+          body:
+              'This shows if OSCSlider can find VRChat. Green means it\'s connected.\n\n'
+              'Not green? In VRChat, open the Action Menu, go to Options, then OSC, and turn it on.',
+        ),
+        TourStep(
+          target: _tourDiscoverKey,
+          icon: Icons.wifi_find,
+          title: 'Find your avatar\'s parameters',
+          body:
+              'Press this while VRChat is running. It lists everything your avatar can do, '
+              'like toggles and sliders. Tick the ones you want, then add them.',
+        ),
+        TourStep(
+          target: _tourCardKey,
+          needsTarget: true,
+          icon: Icons.tune,
+          title: 'Controls',
+          body:
+              'Each card controls one thing on your avatar. Move the slider or flip the switch, '
+              'and your avatar changes right away.\n\n'
+              'Right-click a card (or press its three dots) to edit or delete it.',
+        ),
+        TourStep(
+          target: _tourAutomationKey,
+          needsTarget: true,
+          icon: Icons.auto_mode,
+          title: 'Make it move by itself',
+          body:
+              'This button makes a control move on its own. It can fade back and forth, '
+              'pick random values, blink, or change at a set time.',
+        ),
+        TourStep(
+          target: _tourAddKey,
+          needsTarget: true,
+          icon: Icons.add,
+          title: 'Add your own',
+          body:
+              'Add a control by hand. There\'s also a list of VRChat\'s own controls, '
+              'like jump, walking and the chatbox.',
+        ),
+        TourStep(
+          target: _tourProfileKey,
+          icon: Icons.person_outline,
+          title: 'Profiles',
+          body:
+              'Each avatar can have its own set of controls. Click here to switch between them.\n\n'
+              'Turn on Auto Mode in Settings, and it switches for you when you change avatar.',
+        ),
+        TourStep(
+          target: _tourSequencesKey,
+          icon: Icons.playlist_play,
+          title: 'Sequences',
+          body:
+              'A sequence does several things in order, like a little script. '
+              'For example: turn on the ears, wait 2 seconds, then wave.',
+        ),
+        TourStep(
+          target: _tourMoreKey,
+          icon: Icons.more_vert,
+          title: 'More options',
+          body: 'Grab your avatar\'s current values from VRChat, or send all of yours again.',
+        ),
+        TourStep(
+          target: _tourSettingsKey,
+          icon: Icons.settings_outlined,
+          title: 'Settings',
+          body:
+              'Connection options, profiles, colours and updates are in here.\n\n'
+              'You can watch this tour again from Settings at any time.',
+        ),
+      ]);
+    } finally {
+      _touring = false;
+      if (!live.config.tutorialSeen) {
+        live.config.tutorialSeen = true;
+        live.persist();
+      }
+    }
   }
 
   // sequences moved out of Settings into their own space since each one now
@@ -423,7 +540,10 @@ class _HomePageState extends State<HomePage> {
         overlay.size.height - globalPosition.dy,
       ),
       items: [
-        const PopupMenuItem(value: 'edit', child: ListTile(leading: Icon(Icons.edit_outlined), title: Text('Edit'))),
+        const PopupMenuItem(
+          value: 'edit',
+          child: ListTile(leading: Icon(Icons.edit_outlined), title: Text('Edit')),
+        ),
         if (param.isAutomatable)
           const PopupMenuItem(
             value: 'automation',
@@ -435,7 +555,10 @@ class _HomePageState extends State<HomePage> {
             child: ListTile(leading: Icon(Icons.download_outlined), title: Text('Fetch value from VRChat')),
           ),
         if (param.type != ParamType.chatbox)
-          const PopupMenuItem(value: 'resend', child: ListTile(leading: Icon(Icons.replay), title: Text('Resend value'))),
+          const PopupMenuItem(
+            value: 'resend',
+            child: ListTile(leading: Icon(Icons.replay), title: Text('Resend value')),
+          ),
         const PopupMenuItem(
           value: 'delete',
           child: ListTile(leading: Icon(Icons.delete_outline), title: Text('Delete')),
@@ -534,6 +657,8 @@ class _HomePageState extends State<HomePage> {
         _notice('Reloaded config.json');
       case 'folder':
         await launchUrl(Uri.directory(ConfigStore.directory));
+      case 'tour':
+        await _startTour();
     }
   }
 
@@ -546,8 +671,13 @@ class _HomePageState extends State<HomePage> {
       appBar: AppBar(
         title: live == null ? const Text('OSCSlider') : _buildProfileSwitcher(live),
         actions: [
-          if (live != null) ConnectionChip(live: live),
+          if (live != null)
+            KeyedSubtree(
+              key: _tourChipKey,
+              child: ConnectionChip(live: live),
+            ),
           IconButton(
+            key: _tourDiscoverKey,
             icon: _discovering
                 ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
                 : const Icon(Icons.wifi_find),
@@ -555,16 +685,19 @@ class _HomePageState extends State<HomePage> {
             onPressed: _discovering || live == null ? null : _discover,
           ),
           IconButton(
+            key: _tourSequencesKey,
             icon: const Icon(Icons.playlist_play),
             tooltip: 'Sequences',
             onPressed: live == null ? null : _openSequencesPage,
           ),
           IconButton(
+            key: _tourSettingsKey,
             icon: const Icon(Icons.settings_outlined),
             tooltip: 'Settings',
             onPressed: live == null ? null : _openSettings,
           ),
           PopupMenuButton<String>(
+            key: _tourMoreKey,
             tooltip: 'More',
             enabled: live != null,
             onSelected: _onMenu,
@@ -590,6 +723,11 @@ class _HomePageState extends State<HomePage> {
                 value: 'folder',
                 child: ListTile(leading: Icon(Icons.folder_open_outlined), title: Text('Open config folder')),
               ),
+              const PopupMenuDivider(),
+              const PopupMenuItem(
+                value: 'tour',
+                child: ListTile(leading: Icon(Icons.school_outlined), title: Text('Show the tour')),
+              ),
             ],
           ),
         ],
@@ -602,6 +740,7 @@ class _HomePageState extends State<HomePage> {
               builder: (context, _) => live.parameters.isEmpty
                   ? const SizedBox.shrink()
                   : FloatingActionButton.extended(
+                      key: _tourAddKey,
                       onPressed: _addParamManually,
                       icon: const Icon(Icons.add),
                       label: const Text('Add parameter'),
@@ -617,9 +756,7 @@ class _HomePageState extends State<HomePage> {
                     backgroundColor: Theme.of(context).colorScheme.errorContainer,
                     leading: const Icon(Icons.save_outlined),
                     content: Text('Couldn\'t save config.json - changes may be lost.\n$error'),
-                    actions: [
-                      TextButton(onPressed: () => _live?.persist(), child: const Text('Retry')),
-                    ],
+                    actions: [TextButton(onPressed: () => _live?.persist(), child: const Text('Retry'))],
                   ),
           ),
           Expanded(child: _buildBody(context)),
@@ -632,6 +769,7 @@ class _HomePageState extends State<HomePage> {
     return ListenableBuilder(
       listenable: live,
       builder: (context, _) => PopupMenuButton<String>(
+        key: _tourProfileKey,
         tooltip: 'Switch profile',
         onSelected: (id) {
           if (id == '__manage') {
@@ -652,10 +790,7 @@ class _HomePageState extends State<HomePage> {
                     child: p.id == live.config.activeProfileId ? const Icon(Icons.check, size: 18) : null,
                   ),
                   Flexible(child: Text(p.name, overflow: TextOverflow.ellipsis)),
-                  if (p.avatarId != null) ...[
-                    const SizedBox(width: 6),
-                    const Icon(Icons.link, size: 14),
-                  ],
+                  if (p.avatarId != null) ...[const SizedBox(width: 6), const Icon(Icons.link, size: 14)],
                 ],
               ),
             ),
@@ -690,11 +825,13 @@ class _HomePageState extends State<HomePage> {
         final filtered = query.isEmpty
             ? config.parameters
             : config.parameters
-                .where((p) =>
-                    p.label.toLowerCase().contains(query) ||
-                    p.name.toLowerCase().contains(query) ||
-                    (p.category?.toLowerCase().contains(query) ?? false))
-                .toList();
+                  .where(
+                    (p) =>
+                        p.label.toLowerCase().contains(query) ||
+                        p.name.toLowerCase().contains(query) ||
+                        (p.category?.toLowerCase().contains(query) ?? false),
+                  )
+                  .toList();
 
         return Column(
           children: [
@@ -764,6 +901,11 @@ class _HomePageState extends State<HomePage> {
       }
     }
 
+    // the tour points at whichever card is drawn first.
+    final firstShown = uncategorized.isNotEmpty
+        ? uncategorized.first
+        : byCategory.entries.where((e) => !_collapsedCategories.contains(e.key)).firstOrNull?.value.first;
+
     return LayoutBuilder(
       builder: (context, constraints) {
         const spacing = 12.0;
@@ -775,22 +917,27 @@ class _HomePageState extends State<HomePage> {
         final cardWidth = (width - spacing * (columns - 1)) / columns;
 
         Widget wrap(List<ParamControl> items) => Wrap(
-              spacing: spacing,
-              runSpacing: spacing,
-              children: [
-                for (final p in items)
-                  SizedBox(
-                    width: cardWidth,
-                    child: ParamCard(
-                      key: ValueKey('card:${p.name}'),
-                      param: p,
-                      live: live,
-                      automationButton: p.isAutomatable ? _automationButton(p) : null,
-                      onMenu: (pos) => _showParamMenu(pos, p),
-                    ),
-                  ),
-              ],
-            );
+          spacing: spacing,
+          runSpacing: spacing,
+          children: [
+            for (final p in items)
+              SizedBox(
+                key: identical(p, firstShown) ? _tourCardKey : null,
+                width: cardWidth,
+                child: ParamCard(
+                  key: ValueKey('card:${p.name}'),
+                  param: p,
+                  live: live,
+                  automationButton: !p.isAutomatable
+                      ? null
+                      : identical(p, firstShown)
+                      ? KeyedSubtree(key: _tourAutomationKey, child: _automationButton(p))
+                      : _automationButton(p),
+                  onMenu: (pos) => _showParamMenu(pos, p),
+                ),
+              ),
+          ],
+        );
 
         return ListView(
           // room under the last card for the floating add button.
@@ -864,6 +1011,7 @@ class _HomePageState extends State<HomePage> {
                     label: const Text('Discover from VRChat'),
                   ),
                   OutlinedButton.icon(
+                    key: _tourAddKey,
                     onPressed: _addParamManually,
                     icon: const Icon(Icons.edit_note),
                     label: const Text('Add by hand'),

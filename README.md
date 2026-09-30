@@ -76,6 +76,7 @@ Script changes across several parameters: *set a value, wait, glide another, pre
 - A configurable fallback listen port, for when VRChat is launched with a custom `--osc` output port.
 
 ### Everything else
+- A quick first-launch tour of the main screen. Replay it any time from Settings or the <kbd>⋮</kbd> menu.
 - A Material You theme picker, with presets or a custom colour wheel.
 - A connection chip that shows whether VRChat is found, whether data is arriving, and any send errors. It also offers a one-click fix if VRChat is listening on a different port than you're sending to.
 - Crash-safe config: saves can't corrupt `config.json`, and a broken one can be restored from the last good copy.
