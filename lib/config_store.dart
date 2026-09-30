@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 
 import 'crash_log.dart';
 import 'param_control.dart';
+import 'platform_paths.dart';
 
 const _defaultConfigContents = '''
 {
@@ -41,8 +42,6 @@ class ConfigLoadException implements Exception {
 class ConfigStore {
   static String get _sep => Platform.pathSeparator;
 
-  // %APPDATA%\OSCSlider\config.json - a Program Files install isn't
-  // user-writable without elevation, so config can't live next to the exe.
   /// tests point this at a temp dir so they never touch the real config.
   @visibleForTesting
   static String? directoryOverride;
@@ -50,9 +49,9 @@ class ConfigStore {
   static Directory _configDir() {
     final override = directoryOverride;
     if (override != null) return Directory(override);
-    final appData = Platform.environment['APPDATA'];
-    final base = appData ?? Directory.systemTemp.path;
-    return Directory('$base${_sep}OSCSlider');
+    // see PlatformPaths.configDir - %APPDATA% on Windows, since a Program
+    // Files install can't write next to its exe.
+    return PlatformPaths.configDir();
   }
 
   static File _configFile() => File('${_configDir().path}${_sep}config.json');

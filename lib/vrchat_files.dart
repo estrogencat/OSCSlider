@@ -2,39 +2,31 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'oscquery_client.dart';
+import 'platform_paths.dart';
 
 /// reads the per-avatar OSC config files VRChat writes to
-/// %USERPROFILE%\AppData\LocalLow\VRChat\VRChat\OSC\usr_*\Avatars\avtr_*.json -
-/// the avatar's display name, and its full parameter list with types, even
-/// when VRChat's OSCQuery server is hanging or VRChat isn't running at all.
+/// ...\AppData\LocalLow\VRChat\VRChat\OSC\usr_*\Avatars\avtr_*.json (on
+/// Linux, inside VRChat's Proton prefix) - the avatar's display name, and
+/// its full parameter list with types, even when VRChat's OSCQuery server
+/// is hanging or VRChat isn't running at all.
 class VrchatFiles {
-  static Directory? _oscRoot() {
-    // LocalLow is a sibling of Local under AppData, not nested inside it.
-    final localAppData = Platform.environment['LOCALAPPDATA'];
-    if (localAppData != null) {
-      return Directory('${Directory(localAppData).parent.path}\\LocalLow\\VRChat\\VRChat\\OSC');
-    }
-    final profile = Platform.environment['USERPROFILE'];
-    if (profile != null) return Directory('$profile\\AppData\\LocalLow\\VRChat\\VRChat\\OSC');
-    return null;
-  }
-
   /// the config for [avatarId] - the most recently written one if several
   /// VRChat accounts on this PC have used the same avatar.
   static Future<Map<String, dynamic>?> readAvatarConfig(String avatarId) async {
     try {
-      final root = _oscRoot();
-      if (root == null || !await root.exists()) return null;
       File? newest;
       DateTime? newestTime;
-      await for (final userDir in root.list()) {
-        if (userDir is! Directory) continue;
-        final file = File('${userDir.path}${Platform.pathSeparator}Avatars${Platform.pathSeparator}$avatarId.json');
-        if (!await file.exists()) continue;
-        final modified = await file.lastModified();
-        if (newestTime == null || modified.isAfter(newestTime)) {
-          newest = file;
-          newestTime = modified;
+      for (final root in PlatformPaths.vrchatOscRoots()) {
+        if (!await root.exists()) continue;
+        await for (final userDir in root.list()) {
+          if (userDir is! Directory) continue;
+          final file = File('${userDir.path}${Platform.pathSeparator}Avatars${Platform.pathSeparator}$avatarId.json');
+          if (!await file.exists()) continue;
+          final modified = await file.lastModified();
+          if (newestTime == null || modified.isAfter(newestTime)) {
+            newest = file;
+            newestTime = modified;
+          }
         }
       }
       if (newest == null) return null;

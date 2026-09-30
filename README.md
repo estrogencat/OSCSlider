@@ -8,7 +8,8 @@ Sliders, toggles, automations and sequences, with your avatar's parameters disco
 [![Latest release](https://img.shields.io/github/v/release/estrogencat/OSCSlider?label=download)](../../releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/estrogencat/OSCSlider/total)](../../releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-![Windows](https://img.shields.io/badge/platform-Windows-0078D4)
+[![CI](../../actions/workflows/ci.yml/badge.svg)](../../actions/workflows/ci.yml)
+![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20%7C%20macOS-555)
 
 </div>
 
@@ -17,7 +18,14 @@ Sliders, toggles, automations and sequences, with your avatar's parameters disco
 
 ## Getting started
 
-1. Grab **`OSCSlider-Setup.exe`** from the [latest release](../../releases/latest), or the portable `.zip` if you'd rather not install anything.
+1. Grab a build from the [latest release](../../releases/latest):
+
+   | Platform | Download |
+   | --- | --- |
+   | Windows | `OSCSlider-Setup.exe`, or the portable `.zip` |
+   | Linux (x64) | `OSCSlider-linux-x64.tar.gz`. Extract it and run `./oscslider`, or `./install.sh` to add it to your app menu |
+   | macOS (Intel + Apple Silicon) | `OSCSlider-macos.zip` (see the [FAQ](#faq) for opening an unsigned app) |
+
 2. In VRChat, turn on OSC: **Action Menu → Options → OSC → Enabled**.
 3. Open OSCSlider and hit **Discover** (the wifi-search icon in the title bar) to pull in your current avatar's parameters.
 
@@ -103,7 +111,27 @@ Set **Send to host** in Settings to your Quest's IP address. Sending works, but 
 <details>
 <summary><strong>Where are my settings stored?</strong></summary>
 
-In `%APPDATA%\OSCSlider\`: `config.json`, a `config.json.bak` from the last launch where the config loaded fine, and `crash.log` if anything went wrong. *⋮ → Open config folder* takes you there.
+| Platform | Folder |
+| --- | --- |
+| Windows | `%APPDATA%\OSCSlider\` |
+| Linux | `~/.config/OSCSlider/` (or `$XDG_CONFIG_HOME/OSCSlider/`) |
+| macOS | `~/Library/Containers/com.estrogencat.oscslider/Data/Library/Application Support/OSCSlider/` |
+
+Inside are `config.json`, a `config.json.bak` from the last launch where the config loaded fine, and `crash.log` if anything went wrong. *⋮ → Open config folder* takes you there.
+
+</details>
+
+<details>
+<summary><strong>Does it work with VRChat on Linux (Proton)?</strong></summary>
+
+Yes, run the native Linux build alongside VRChat. Sending works like it does on Windows. Discovery also reads VRChat's saved avatar configs from its Proton prefix, in any Steam library, including Flatpak and Snap Steam. Whether VRChat under Proton finds the app over OSCQuery depends on Wine's networking; if it doesn't, the app falls back to port 9001 for receiving.
+
+</details>
+
+<details>
+<summary><strong>macOS says the app can't be opened</strong></summary>
+
+The macOS build isn't signed with an Apple developer certificate. Right-click the app and choose **Open** the first time, or run `xattr -dr com.apple.quarantine /path/to/OSCSlider.app`. It needs macOS 12 or newer, which includes older Macs running [OpenCore Legacy Patcher](https://dortania.github.io/OpenCore-Legacy-Patcher/). Since VRChat itself doesn't run on macOS, it's mostly useful for controlling VRChat on another PC or Quest on your network, or other OSC software.
 
 </details>
 
@@ -121,13 +149,17 @@ Yes. The x64 build runs through Windows' built-in emulation. Flutter doesn't off
 
 ### Build
 
-Requires the Flutter SDK with Windows desktop support.
+Requires the Flutter SDK. Build on the platform you're targeting:
 
 ```bash
 flutter pub get
-flutter build windows --release   # output: build/windows/x64/runner/Release/
+flutter build windows --release   # build/windows/x64/runner/Release/
+flutter build linux --release     # build/linux/x64/release/bundle/
+flutter build macos --release     # build/macos/Build/Products/Release/OSCSlider.app
 flutter test                      # optional
 ```
+
+On Linux you'll also need the GTK toolchain: `sudo apt install clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev` (or your distro's equivalent). macOS needs Xcode.
 
 ### Installer
 
@@ -140,7 +172,13 @@ Requires [Inno Setup 6](https://jrsoftware.org/isinfo.php). Build the release bi
 > [!IMPORTANT]
 > Run that from PowerShell, not Git Bash or `cmd`. Bash's path translation mangles the `/D` define, and Inno Setup fails with a confusing "you may not specify more than one script filename" error.
 
-The installer lands in `installer/Output/`. Pushing a `v*` tag builds both the installer and the portable zip and attaches them to a GitHub release automatically.
+The installer lands in `installer/Output/`.
+
+### Releases & CI
+
+- Every push and pull request runs `flutter analyze` and `flutter test` ([CI](.github/workflows/ci.yml)).
+- Pushing a `v*` tag builds Windows, Linux and macOS, then publishes a release with generated notes and a `SHA256SUMS.txt` ([Release](.github/workflows/release.yml)). Tags with a suffix, like `v1.2.0-beta.1`, become pre-releases, which the in-app update check ignores.
+- Running the Release workflow by hand builds everything as downloadable artifacts, without publishing.
 
 ### Project layout
 
@@ -153,7 +191,9 @@ The installer lands in `installer/Output/`. Pushing a `v*` tag builds both the i
 | `lib/oscquery_service.dart`, `mdns_codec.dart` | The app's own OSCQuery service: loopback HTTP + UDP, and a small mDNS responder |
 | `lib/osc_input_hub.dart` | All incoming OSC in one stream, plus the connection status |
 | `lib/oscquery_client.dart`, `discovery_flow.dart`, `vrchat_files.dart` | Finding VRChat, reading its parameter tree, and the saved-config fallback |
+| `lib/platform_paths.dart` | Per-OS folders (config, VRChat's files under Proton) and socket options |
 | `lib/main.dart`, `*_page.dart`, `*_dialog.dart`, `param_card.dart` | UI |
+| `windows/`, `linux/`, `macos/`, `installer/` | Platform runners, Linux packaging (`linux/packaging/`), and the Inno Setup script |
 
 ### How receiving works
 

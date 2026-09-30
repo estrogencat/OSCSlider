@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=OSCSlider
+Comment=Control VRChat avatar parameters over OSC
+Exec=oscslider
+Icon=com.estrogencat.oscslider
+Terminal=false
+Categories=Utility;Game;
+Keywords=VRChat;OSC;OSCQuery;avatar;
+StartupWMClass=com.estrogencat.oscslider

@@ -1,17 +1,14 @@
 name: Release
 
-# builds a Windows installer and attaches it to a GitHub Release. runs on
-# pushing a version tag (e.g. "v1.2.0"), or manually via workflow_dispatch
-# for test runs.
+# builds Windows (installer + portable zip), Linux (tarball) and macOS (app
+# zip) and attaches them to a GitHub Release. runs on pushing a version tag
+# (e.g. "v1.2.0", or "v1.2.0-beta.1" for a pre-release), or manually via
+# workflow_dispatch for test builds - those skip the release step, and the
+# builds are downloadable from the run's artifacts instead.
 #
-# only x64 is built - Flutter doesn't publish a native ARM64 Windows SDK to
-# cross-compile a genuinely separate ARM64 binary from (confirmed via its
-# releases_windows.json manifest, which only ever lists an x64 dart_sdk_arch).
-# this x64 build already runs fine on ARM64 Windows through the OS's built-in
-# x64 emulation, so there's no real benefit to a second "arm64" build that
-# would just be the same x64 bytes under a different label.
-# 32-bit x86 isn't offered because Flutter's Windows engine was never built
-# for it - there is no such target to produce.
+# Windows is x64 only - Flutter has no native ARM64 Windows toolchain, and
+# the x64 build runs fine on ARM64 Windows through the OS's emulation.
+# macOS is a universal binary (Intel + Apple Silicon), unsigned.
 
 on:
   push:
@@ -20,75 +17,132 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
+
   build:
-    runs-on: windows-latest
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+          - os: ubuntu-latest
+            platform: linux
+          - os: macos-latest
+            platform: macos
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
+          cache: true
 
-      - name: Enable Windows desktop
-        run: flutter config --enable-windows-desktop
-
-      - run: flutter pub get
-
-      - run: flutter build windows --release
-
-      - name: Determine version from tag
+      # "v1.2.0-beta.1" -> version "1.2.0-beta.1", build name "1.2.0". the
+      # build name is what the app reports as its own version, which the
+      # update check compares against the latest release - without it every
+      # build claimed to be pubspec's 1.0.0.
+      - name: Determine version
         id: version
         shell: bash
         run: |
-          if [[ "$GITHUB_REF_NAME" == v* ]]; then
-            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
           else
-            echo "version=0.0.0-dev" >> "$GITHUB_OUTPUT"
+            version="0.0.0-dev.${GITHUB_RUN_NUMBER}"
           fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "name=${version%%[-+]*}" >> "$GITHUB_OUTPUT"
 
-      - name: Build portable zip
+      - name: Install Linux build dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libgtk-3-dev liblzma-dev
+
+      - run: flutter pub get
+
+      - name: Build
+        run: flutter build ${{ matrix.platform }} --release --build-name=${{ steps.version.outputs.name }} --build-number=${{ github.run_number }}
+
+      - name: Package (Windows)
+        if: matrix.platform == 'windows'
         shell: pwsh
         run: |
-          Compress-Archive -Path "build\windows\x64\runner\Release\*" -DestinationPath "OSCSlider-portable.zip"
+          Compress-Archive -Path "build\windows\x64\runner\Release\*" -DestinationPath "OSCSlider-windows-x64-portable.zip"
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          & $iscc "/DAppVersion=${{ steps.version.outputs.version }}" "/DAppNumericVersion=${{ steps.version.outputs.name }}" installer\oscslider.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Move-Item "OSCSlider-windows-x64-portable.zip" dist/
+          Move-Item "installer\Output\OSCSlider-Setup.exe" "dist\OSCSlider-Setup.exe"
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: OSCSlider-portable
-          path: OSCSlider-portable.zip
-
-      - name: Install Inno Setup
-        run: choco install innosetup -y --no-progress
-
-      - name: Build installer
-        shell: cmd
+      - name: Package (Linux)
+        if: matrix.platform == 'linux'
         run: |
-          "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DAppVersion=${{ steps.version.outputs.version }} installer\oscslider.iss
+          stage="OSCSlider-linux-x64"
+          mkdir -p "$stage" dist
+          cp -r build/linux/x64/release/bundle/. "$stage/"
+          cp linux/packaging/install.sh linux/packaging/com.estrogencat.oscslider.desktop "$stage/"
+          chmod +x "$stage/install.sh" "$stage/oscslider"
+          tar -czf "dist/$stage.tar.gz" "$stage"
+
+      - name: Package (macOS)
+        if: matrix.platform == 'macos'
+        run: |
+          mkdir -p dist
+          ditto -c -k --sequesterRsrc --keepParent build/macos/Build/Products/Release/OSCSlider.app dist/OSCSlider-macos.zip
 
       - uses: actions/upload-artifact@v4
         with:
-          name: OSCSlider-Setup
-          path: installer/Output/OSCSlider-Setup.exe
+          name: OSCSlider-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
 
   release:
     needs: build
-    # a GitHub Release needs an actual tag to attach to - only do this for a
-    # real "vX.Y.Z" tag push. workflow_dispatch runs are for test builds; the
-    # built exe/zip are still downloadable from the run's artifacts either way.
+    # a GitHub Release needs an actual tag to attach to.
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
-          path: artifacts
+          path: dist
+          merge-multiple: true
 
-      - name: Create release and upload installer + portable zip
-        uses: softprops/action-gh-release@v2
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+
+      - uses: softprops/action-gh-release@v2
         with:
-          files: |
-            artifacts/**/*.exe
-            artifacts/**/*.zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          files: dist/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          # "v1.2.0-beta.1" and friends are marked as pre-releases, which
+          # the in-app update check ignores.
+          prerelease: ${{ contains(github.ref_name, '-') }}

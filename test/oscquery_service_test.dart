@@ -68,11 +68,16 @@ void main() {
     // which works even where multicast doesn't route.
     final socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
     final reply = Completer<DnsMessage>();
+    // other test files run their own responders on the same machine - wait
+    // for the answer from this one.
     socket.listen((e) {
       if (e != RawSocketEvent.read) return;
       final dg = socket.receive();
       final msg = dg == null ? null : decodeDnsMessage(dg.data);
-      if (msg != null && msg.isResponse && !reply.isCompleted) reply.complete(msg);
+      final ours = msg != null &&
+          msg.isResponse &&
+          msg.answers.any((r) => r.ptrTarget?.startsWith(service.instanceName) ?? false);
+      if (ours && !reply.isCompleted) reply.complete(msg);
     });
     socket.send(
       encodeDnsMessage(const DnsMessage(
@@ -80,7 +85,7 @@ void main() {
         isResponse: false,
         questions: [DnsQuestion(oscJsonServiceType, DnsType.ptr)],
       )),
-      InternetAddress.loopbackIPv4,
+      mdnsGroupIPv4,
       mdnsPort,
     );
     final msg = await reply.future.timeout(const Duration(seconds: 5));
@@ -108,7 +113,7 @@ void main() {
       ],
     ));
     final socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
-    socket.send(announce, InternetAddress.loopbackIPv4, mdnsPort);
+    socket.send(announce, mdnsGroupIPv4, mdnsPort);
     for (var i = 0; i < 50 && service.peers.isEmpty; i++) {
       await Future.delayed(const Duration(milliseconds: 20));
     }
@@ -122,7 +127,7 @@ void main() {
       isResponse: true,
       answers: [DnsRecord.ptr(oscJsonServiceType, '$instance.$oscJsonServiceType', ttl: 0)],
     ));
-    socket.send(goodbye, InternetAddress.loopbackIPv4, mdnsPort);
+    socket.send(goodbye, mdnsGroupIPv4, mdnsPort);
     for (var i = 0; i < 50 && service.peers.isNotEmpty; i++) {
       await Future.delayed(const Duration(milliseconds: 20));
     }

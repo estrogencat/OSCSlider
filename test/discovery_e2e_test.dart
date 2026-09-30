@@ -2,7 +2,10 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:osc_slider/config_store.dart';
 import 'package:osc_slider/discovery_flow.dart';
+import 'package:osc_slider/live_controller.dart';
+import 'package:osc_slider/param_control.dart';
 import 'package:osc_slider/mdns_codec.dart';
 import 'package:osc_slider/osc_client.dart';
 import 'package:osc_slider/osc_input_hub.dart';
@@ -93,7 +96,7 @@ void main() {
           DnsRecord.a('$instance.oscjson.local', InternetAddress.loopbackIPv4),
         ],
       )),
-      InternetAddress.loopbackIPv4,
+      mdnsGroupIPv4,
       mdnsPort,
     );
     socket.close();
@@ -120,6 +123,31 @@ void main() {
       OscQueryClient.fetchParameterValue(endpoint, '/avatar/parameters/Missing'),
       throwsA(isA<OscQueryException>().having((e) => e.notFound, 'notFound', true)),
     );
+  });
+
+  test('auto mode picks up the avatar already being worn, and sync pulls its values', () async {
+    if (oscInputHub.status.value.vrchat == null) {
+      markTestSkipped('fake VRChat not registered');
+      return;
+    }
+    final dir = await Directory.systemTemp.createTemp('oscslider_auto');
+    ConfigStore.directoryOverride = dir.path;
+    addTearDown(() async {
+      await ConfigStore.flush();
+      ConfigStore.directoryOverride = null;
+      await dir.delete(recursive: true);
+    });
+    final config = AppConfig(host: '127.0.0.1', port: 9000, parameters: [])..autoProfileMode = true;
+    final live = LiveController(config);
+    addTearDown(live.dispose);
+    for (var i = 0; i < 50 && config.activeProfile.avatarId != 'avtr_test'; i++) {
+      await Future.delayed(const Duration(milliseconds: 50));
+    }
+    expect(config.activeProfile.avatarId, 'avtr_test');
+
+    live.addParam(ParamControl(name: 'Hue', label: 'Hue', type: ParamType.slider));
+    await live.pullFromVrchat(avatar: false);
+    expect(live.sliderValue(config.parameters.single), 0.25);
   });
 
   test('OSC sent to the OSCQuery port reaches the hub', () async {
