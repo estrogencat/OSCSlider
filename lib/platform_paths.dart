@@ -29,6 +29,24 @@ class PlatformPaths {
     return Directory('${base ?? Directory.systemTemp.path}${_sep}OSCSlider');
   }
 
+  /// the user's Downloads folder (XDG_DOWNLOAD_DIR on Linux), else temp.
+  static Directory downloadsDir() {
+    final h = home;
+    if (h == null) return Directory.systemTemp;
+    if (Platform.isLinux) {
+      try {
+        final dirs = File('${_env('XDG_CONFIG_HOME') ?? '$h/.config'}/user-dirs.dirs').readAsStringSync();
+        final m = RegExp(r'^XDG_DOWNLOAD_DIR="(.+)"', multiLine: true).firstMatch(dirs);
+        if (m != null) {
+          final dir = Directory(m.group(1)!.replaceFirst(r'$HOME', h));
+          if (dir.existsSync()) return dir;
+        }
+      } catch (_) {}
+    }
+    final dir = Directory('$h${_sep}Downloads');
+    return dir.existsSync() ? dir : Directory.systemTemp;
+  }
+
   /// SO_REUSEPORT - unsupported on Windows (reuseAddress is what shares a
   /// port there), but needed on Linux/macOS to share UDP 5353 with avahi or
   /// mDNSResponder, which set it on their own sockets.

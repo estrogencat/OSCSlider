@@ -3,7 +3,6 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'app_updater.dart';
@@ -21,6 +20,7 @@ import 'param_form_dialog.dart';
 import 'save_parameters_dialog.dart';
 import 'snapshot_editor_page.dart';
 import 'theme_notifier.dart';
+import 'update_dialog.dart';
 
 const _repoUrl = 'https://github.com/estrogencat/OSCSlider';
 
@@ -59,8 +59,8 @@ class _SettingsPageState extends State<SettingsPage> {
     _liveParamNoiseThresholdController = TextEditingController(text: config.liveParamNoiseThreshold.toString());
     _oscQueryFetchTimeoutController = TextEditingController(text: config.oscQueryFetchTimeoutSeconds.toString());
     _listenPortController = TextEditingController(text: config.listenPort?.toString() ?? '');
-    PackageInfo.fromPlatform().then((info) {
-      if (mounted) setState(() => _appVersion = info.version);
+    currentAppVersion().then((v) {
+      if (mounted) setState(() => _appVersion = v);
     }).catchError((_) {});
   }
 
@@ -977,6 +977,36 @@ class _SettingsPageState extends State<SettingsPage> {
             },
           ),
         ],
+        _sectionTitle(
+          context,
+          'Updates',
+          trailing: _checkingUpdate
+              ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+              : TextButton.icon(
+                  onPressed: _checkForUpdate,
+                  icon: const Icon(Icons.system_update_alt),
+                  label: const Text('Check now'),
+                ),
+        ),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Check for updates when OSCSlider starts'),
+          value: config.checkUpdatesOnStartup,
+          onChanged: (v) {
+            setState(() => config.checkUpdatesOnStartup = v);
+            _persist();
+          },
+        ),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Include pre-releases'),
+          subtitle: const Text('Betas get new features first, but may have bugs'),
+          value: config.includePrereleaseUpdates,
+          onChanged: (v) {
+            setState(() => config.includePrereleaseUpdates = v);
+            _persist();
+          },
+        ),
         const SizedBox(height: 12),
         Wrap(
           spacing: 8,
@@ -1069,19 +1099,23 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
+  // a manual check ignores "skip this version" and reports failures.
   Future<void> _checkForUpdate() async {
     setState(() => _checkingUpdate = true);
     final messenger = ScaffoldMessenger.of(context);
-    final update = await checkForUpdate(_appVersion);
-    if (!mounted) return;
-    setState(() => _checkingUpdate = false);
-    if (update == null) {
-      messenger.showSnackBar(const SnackBar(content: Text('No update found.')));
-    } else {
-      messenger.showSnackBar(SnackBar(
-        content: Text('OSCSlider v${update.version} is available.'),
-        action: SnackBarAction(label: 'View', onPressed: () => launchUrl(Uri.parse(update.url))),
-      ));
+    try {
+      final current = await currentAppVersion();
+      final update = await checkForUpdate(current, includePrereleases: config.includePrereleaseUpdates);
+      if (!mounted) return;
+      if (update == null) {
+        messenger.showSnackBar(SnackBar(content: Text('You\'re on the latest version (v$current).')));
+      } else {
+        await showUpdateDialog(context, info: update, currentVersion: current, live: live);
+      }
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text('Couldn\'t check for updates: $e')));
+    } finally {
+      if (mounted) setState(() => _checkingUpdate = false);
     }
   }
 

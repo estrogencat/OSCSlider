@@ -24,6 +24,15 @@ AppPublisher={#AppPublisher}
 DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
+; always show the folder page (the default hides it on upgrades), and let
+; people pick "just me" to install without admin, e.g. to another drive.
+; {autopf} then becomes %LOCALAPPDATA%\Programs. an update keeps the
+; previous folder and mode, since UsePreviousAppDir/Privileges default on.
+DisableDirPage=no
+PrivilegesRequired=admin
+PrivilegesRequiredOverridesAllowed=dialog commandline
+; makes Explorer refresh its icon cache, so a new app icon shows up.
+ChangesAssociations=yes
 UninstallDisplayIcon={app}\{#AppExeName}
 OutputDir=Output
 OutputBaseFilename=OSCSlider-Setup
@@ -52,3 +61,5 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: deskto
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "Launch {#AppName}"; Flags: nowait postinstall skipifsilent
+; the in-app updater runs setup with /SILENT, so reopen the app after.
+Filename: "{app}\{#AppExeName}"; Flags: nowait postinstall skipifnotsilent

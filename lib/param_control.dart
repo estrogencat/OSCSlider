@@ -871,6 +871,12 @@ class AppConfig {
   // this app's own sends mirrored to them.
   final List<ForwardTarget> forwardTargets;
 
+  // updates: check on launch, offer pre-releases, and a version the user
+  // chose to skip (only silences the launch check).
+  bool checkUpdatesOnStartup;
+  bool includePrereleaseUpdates;
+  String? skippedUpdateVersion;
+
   // how long to wait on VRChat's OSCQuery server before falling back to
   // something else - it's been observed to hang outright for some avatars.
   // Settings > Miscellaneous, developer mode only.
@@ -909,6 +915,9 @@ class AppConfig {
     this.autoProfileCreate = true,
     this.listenPort,
     List<ForwardTarget>? forwardTargets,
+    this.checkUpdatesOnStartup = true,
+    this.includePrereleaseUpdates = false,
+    this.skippedUpdateVersion,
     this.oscQueryFetchTimeoutSeconds = 5,
     this.primaryOverride,
     this.secondaryOverride,
@@ -1006,6 +1015,9 @@ class AppConfig {
           .map(ForwardTarget.fromJson)
           .whereType<ForwardTarget>()
           .toList(),
+      checkUpdatesOnStartup: (json['checkUpdatesOnStartup'] as bool?) ?? true,
+      includePrereleaseUpdates: (json['includePrereleaseUpdates'] as bool?) ?? false,
+      skippedUpdateVersion: _nonEmpty(json['skippedUpdateVersion'] as String?),
       oscQueryFetchTimeoutSeconds: (json['oscQueryFetchTimeoutSeconds'] as num?)?.toInt() ?? 5,
       primaryOverride: colorFromHex(json['primaryOverride'] as String?),
       secondaryOverride: colorFromHex(json['secondaryOverride'] as String?),
@@ -1031,6 +1043,9 @@ class AppConfig {
       'autoProfileCreate': autoProfileCreate,
       if (listenPort != null) 'listenPort': listenPort,
       if (forwardTargets.isNotEmpty) 'forwardTargets': forwardTargets.map((t) => t.toJson()).toList(),
+      'checkUpdatesOnStartup': checkUpdatesOnStartup,
+      'includePrereleaseUpdates': includePrereleaseUpdates,
+      if (skippedUpdateVersion != null) 'skippedUpdateVersion': skippedUpdateVersion,
       'oscQueryFetchTimeoutSeconds': oscQueryFetchTimeoutSeconds,
       if (primaryOverride != null) 'primaryOverride': colorToHex(primaryOverride!),
       if (secondaryOverride != null) 'secondaryOverride': colorToHex(secondaryOverride!),

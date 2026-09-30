@@ -89,7 +89,7 @@ jobs:
       - run: flutter pub get
 
       - name: Build
-        run: flutter build ${{ matrix.platform }} --release --build-name=${{ steps.version.outputs.name }} --build-number=${{ github.run_number }}
+        run: flutter build ${{ matrix.platform }} --release --build-name=${{ steps.version.outputs.name }} --build-number=${{ github.run_number }} --dart-define=OSCSLIDER_VERSION=${{ steps.version.outputs.version }}
 
       - name: Package (Windows)
         if: matrix.platform == 'windows'

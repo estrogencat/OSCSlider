@@ -4,7 +4,6 @@ import 'dart:math';
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
-import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'app_updater.dart';
@@ -25,6 +24,7 @@ import 'sequence_editor_page.dart';
 import 'sequences_page.dart';
 import 'settings_page.dart';
 import 'theme_notifier.dart';
+import 'update_dialog.dart';
 
 void main() {
   // OSC/networking code (socket sends, discovery, HTTP fetches) fires
@@ -148,12 +148,21 @@ class _HomePageState extends State<HomePage> {
   // silent - only shows anything if a newer release is actually found.
   Future<void> _checkForUpdateSilently() async {
     try {
-      final info = await PackageInfo.fromPlatform();
-      final update = await checkForUpdate(info.version);
-      if (update == null || !mounted) return;
+      // config loads asynchronously, and the check shouldn't slow startup.
+      await Future.delayed(const Duration(seconds: 3));
+      final live = _live;
+      if (live == null || !live.config.checkUpdatesOnStartup) return;
+      final current = await currentAppVersion();
+      if (isDevVersion(current)) return;
+      final update = await checkForUpdate(current, includePrereleases: live.config.includePrereleaseUpdates);
+      if (update == null || update.version == live.config.skippedUpdateVersion || !mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text('OSCSlider v${update.version} is available.'),
-        action: SnackBarAction(label: 'View', onPressed: () => launchUrl(Uri.parse(update.url))),
+        duration: const Duration(seconds: 10),
+        action: SnackBarAction(
+          label: 'Details',
+          onPressed: () => showUpdateDialog(context, info: update, currentVersion: current, live: live),
+        ),
       ));
     } catch (_) {}
   }
