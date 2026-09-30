@@ -1012,6 +1012,12 @@ class _SettingsPageState extends State<SettingsPage> {
           spacing: 8,
           children: [
             TextButton.icon(
+              // main screen starts the tour once settings is closed.
+              onPressed: () => Navigator.of(context).pop('tour'),
+              icon: const Icon(Icons.school_outlined),
+              label: const Text('Show the tour again'),
+            ),
+            TextButton.icon(
               onPressed: () => launchUrl(Uri.directory(ConfigStore.directory)),
               icon: const Icon(Icons.folder_open_outlined),
               label: const Text('Open config folder'),

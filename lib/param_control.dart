@@ -871,6 +871,10 @@ class AppConfig {
   // this app's own sends mirrored to them.
   final List<ForwardTarget> forwardTargets;
 
+  // the first-launch tour. configs from before it existed count as seen,
+  // so it only pops up for new users (Settings can replay it).
+  bool tutorialSeen;
+
   // updates: check on launch, offer pre-releases, and a version the user
   // chose to skip (only silences the launch check).
   bool checkUpdatesOnStartup;
@@ -915,6 +919,7 @@ class AppConfig {
     this.autoProfileCreate = true,
     this.listenPort,
     List<ForwardTarget>? forwardTargets,
+    this.tutorialSeen = true,
     this.checkUpdatesOnStartup = true,
     this.includePrereleaseUpdates = false,
     this.skippedUpdateVersion,
@@ -1015,6 +1020,7 @@ class AppConfig {
           .map(ForwardTarget.fromJson)
           .whereType<ForwardTarget>()
           .toList(),
+      tutorialSeen: (json['tutorialSeen'] as bool?) ?? true,
       checkUpdatesOnStartup: (json['checkUpdatesOnStartup'] as bool?) ?? true,
       includePrereleaseUpdates: (json['includePrereleaseUpdates'] as bool?) ?? false,
       skippedUpdateVersion: _nonEmpty(json['skippedUpdateVersion'] as String?),
@@ -1043,6 +1049,7 @@ class AppConfig {
       'autoProfileCreate': autoProfileCreate,
       if (listenPort != null) 'listenPort': listenPort,
       if (forwardTargets.isNotEmpty) 'forwardTargets': forwardTargets.map((t) => t.toJson()).toList(),
+      'tutorialSeen': tutorialSeen,
       'checkUpdatesOnStartup': checkUpdatesOnStartup,
       'includePrereleaseUpdates': includePrereleaseUpdates,
       if (skippedUpdateVersion != null) 'skippedUpdateVersion': skippedUpdateVersion,

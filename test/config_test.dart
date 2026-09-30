@@ -8,9 +8,13 @@ import 'package:osc_slider/param_control.dart';
 void main() {
   group('AppConfig parsing', () {
     test('round trips', () {
-      final config = AppConfig(host: '127.0.0.1', port: 9000, parameters: [
-        ParamControl(name: 'A', label: 'A', type: ParamType.slider, automation: Automation(enabled: true)),
-      ]);
+      final config = AppConfig(
+        host: '127.0.0.1',
+        port: 9000,
+        parameters: [
+          ParamControl(name: 'A', label: 'A', type: ParamType.slider, automation: Automation(enabled: true)),
+        ],
+      );
       final again = AppConfig.fromJson(jsonDecode(jsonEncode(config.toJson())) as Map<String, dynamic>);
       expect(again.parameters.single.automation!.enabled, true);
       expect(again.syncFromVrchat, true);
@@ -32,7 +36,13 @@ void main() {
         'port': 99999,
         'host': '  ',
         'profiles': [
-          {'name': 'One', 'parameters': [{'name': 'X'}, {'label': 'nameless'}]},
+          {
+            'name': 'One',
+            'parameters': [
+              {'name': 'X'},
+              {'label': 'nameless'},
+            ],
+          },
           {'id': 'dup', 'name': 'Two', 'parameters': []},
           {'id': 'dup', 'name': 'Three', 'parameters': []},
         ],
@@ -44,7 +54,13 @@ void main() {
     });
 
     test('bad curve points fall back instead of throwing', () {
-      final auto = Automation.fromJson({'customCurvePoints': [[0, 0], 'junk', [1]]});
+      final auto = Automation.fromJson({
+        'customCurvePoints': [
+          [0, 0],
+          'junk',
+          [1],
+        ],
+      });
       expect(auto.customCurvePoints.length, 2);
     });
   });
@@ -159,5 +175,17 @@ void main() {
       await file('config.json').writeAsString('');
       expect(ConfigStore.load(), throwsA(isA<ConfigLoadException>()));
     });
+  });
+
+  test('only brand new configs start the tour', () async {
+    expect(AppConfig.fromJson({'host': '127.0.0.1', 'port': 9000}).tutorialSeen, true);
+    final dir = await Directory.systemTemp.createTemp('oscslider_tour');
+    ConfigStore.directoryOverride = dir.path;
+    try {
+      expect((await ConfigStore.load()).tutorialSeen, false);
+    } finally {
+      ConfigStore.directoryOverride = null;
+      await dir.delete(recursive: true);
+    }
   });
 }
