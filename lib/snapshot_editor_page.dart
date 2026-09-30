@@ -116,7 +116,7 @@ class _SnapshotEditorPageState extends State<SnapshotEditorPage> {
       ),
       items: [
         const PopupMenuItem(value: 'edit', child: Text('Edit')),
-        if (param.type != ParamType.custom) const PopupMenuItem(value: 'fetch', child: Text('Fetch value')),
+        if (param.isAutomatable) const PopupMenuItem(value: 'fetch', child: Text('Fetch value')),
         const PopupMenuItem(value: 'delete', child: Text('Delete')),
       ],
     );
@@ -288,7 +288,11 @@ class _SnapshotEditorPageState extends State<SnapshotEditorPage> {
                           Padding(
                             padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
                             child: Text(
-                              'custom - type "${p.customTypeTag}"',
+                              switch (p.type) {
+                                ParamType.button => 'button - no saved value',
+                                ParamType.chatbox => 'chatbox - no saved value',
+                                _ => 'custom - type "${p.customTypeTag}"',
+                              },
                               style: Theme.of(context).textTheme.bodySmall,
                             ),
                           ),

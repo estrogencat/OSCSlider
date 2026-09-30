@@ -25,7 +25,7 @@ bool _isGateTrigger(ParamTrigger trig, List<ParamControl> parameters) {
     }
   }
   if (watched == null) return false;
-  if (watched.type == ParamType.toggle) {
+  if (watched.isBoolLike) {
     return trig.toggleCondition == ToggleTriggerCondition.whileOn ||
         trig.toggleCondition == ToggleTriggerCondition.whileOff;
   }

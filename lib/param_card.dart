@@ -36,11 +36,14 @@ class ParamCard extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               Text(param.label, style: theme.textTheme.titleMedium, overflow: TextOverflow.ellipsis),
-              if (showAddress || param.type == ParamType.custom)
+              if (showAddress || param.type == ParamType.custom || param.type == ParamType.button)
                 Text(
-                  param.type == ParamType.custom
-                      ? '${oscAddressFor(param)}  ·  ${param.customTypeTag}'
-                      : param.name,
+                  switch (param.type) {
+                    ParamType.custom => '${oscAddressFor(param)}  ·  ${param.customTypeTag}',
+                    ParamType.button =>
+                      '${param.buttonMode == ButtonMode.hold ? 'hold' : 'tap'}  ·  ${oscAddressFor(param)}',
+                    _ => param.name,
+                  },
                   style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
                   overflow: TextOverflow.ellipsis,
                 ),
@@ -69,6 +72,10 @@ class ParamCard extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [header, _slider(context)],
         ),
+      ParamType.chatbox => Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [header, _chatbox(context)],
+        ),
       _ => header,
     };
 
@@ -83,7 +90,12 @@ class ParamCard extends StatelessWidget {
           // the whole card flips a toggle, not just the little switch.
           onTap: param.type == ParamType.toggle ? () => live.setToggle(param, !live.toggleValue(param)) : null,
           child: Padding(
-            padding: EdgeInsets.fromLTRB(16, dense ? 4 : 8, 4, param.type == ParamType.slider ? 0 : (dense ? 4 : 8)),
+            padding: EdgeInsets.fromLTRB(
+              16,
+              dense ? 4 : 8,
+              param.type == ParamType.chatbox ? 12 : 4,
+              param.type == ParamType.slider ? 0 : (dense ? 4 : 8),
+            ),
             child: body,
           ),
         ),
@@ -117,6 +129,12 @@ class ParamCard extends StatelessWidget {
             ),
           ),
         ];
+      case ParamType.button:
+        return [
+          Padding(padding: const EdgeInsets.symmetric(horizontal: 4), child: _PushButton(param: param, live: live)),
+        ];
+      case ParamType.chatbox:
+        return const [];
       case ParamType.custom:
         return [
           // True/False/Nil/Infinitum carry no value - just the send button.
@@ -139,16 +157,60 @@ class ParamCard extends StatelessWidget {
     final value = live.sliderValue(param);
     final isInt = param.numericKind == NumericKind.int;
     final span = hi - lo;
-    // ints snap to whole steps, as long as there aren't so many that the
-    // tick marks become a solid bar.
-    final divisions = isInt && span == span.roundToDouble() && span >= 1 && span <= 1000 ? span.round() : null;
+    // ints snap to whole steps (and floats to their step, if one is set), as
+    // long as there aren't so many that the tick marks become a solid bar.
+    final step = isInt ? (param.step >= 1 ? param.step.roundToDouble() : 1.0) : param.step;
+    final count = step > 0 ? span / step : 0.0;
+    final divisions = step > 0 && (count - count.round()).abs() < 1e-6 && count >= 1 && count <= 1000
+        ? count.round()
+        : null;
     return Slider(
       value: value.clamp(lo, hi),
       min: lo,
       max: hi,
       divisions: divisions,
-      label: divisions != null ? value.round().toString() : null,
+      label: divisions != null ? formatParamValue(param, value, live.advancedMode) : null,
       onChanged: (v) => live.setSlider(param, v),
+      onChangeEnd: (_) => live.releaseSlider(param),
+    );
+  }
+
+  Widget _chatbox(BuildContext context) {
+    final controller = live.customText[param.name];
+    Future<void> send() async {
+      final messenger = ScaffoldMessenger.of(context);
+      try {
+        await live.sendChatbox(param);
+      } catch (e) {
+        messenger.showSnackBar(SnackBar(content: Text('Send failed: $e')));
+      }
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: TextField(
+              controller: controller,
+              // VRChat shows at most 144 characters.
+              maxLength: 144,
+              textInputAction: TextInputAction.send,
+              decoration: InputDecoration(
+                isDense: true,
+                hintText: param.chatboxSendImmediately ? 'Message' : 'Opens the in-game keyboard with this text',
+              ),
+              onChanged: (text) {
+                param.customValueText = text;
+                live.chatboxTyping(param, text.isNotEmpty);
+              },
+              onSubmitted: (_) => send(),
+            ),
+          ),
+          IconButton(icon: const Icon(Icons.send), tooltip: 'Send to chatbox', onPressed: send),
+        ],
+      ),
     );
   }
 
@@ -159,5 +221,51 @@ class ParamCard extends StatelessWidget {
     } catch (e) {
       messenger.showSnackBar(SnackBar(content: Text('Send failed: $e')));
     }
+  }
+}
+
+/// a momentary button - held down while pressed (hold mode), or a short
+/// press-and-release pulse per click (tap mode).
+class _PushButton extends StatelessWidget {
+  final ParamControl param;
+  final LiveController live;
+  const _PushButton({required this.param, required this.live});
+
+  @override
+  Widget build(BuildContext context) {
+    final pressed = live.toggleValue(param);
+    final scheme = Theme.of(context).colorScheme;
+    final button = AnimatedContainer(
+      duration: const Duration(milliseconds: 80),
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+      decoration: BoxDecoration(
+        color: pressed ? scheme.primary : scheme.secondaryContainer,
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Text(
+        param.buttonMode == ButtonMode.hold ? 'Hold' : 'Press',
+        style: TextStyle(
+          color: pressed ? scheme.onPrimary : scheme.onSecondaryContainer,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
+    if (param.buttonMode == ButtonMode.tap) {
+      return MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: GestureDetector(onTap: () => live.tapButton(param), child: button),
+      );
+    }
+    // raw pointer events, so it stays down for exactly as long as it's held
+    // (a gesture detector would wait to decide between tap and drag).
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: Listener(
+        onPointerDown: (_) => live.pressButton(param, true),
+        onPointerUp: (_) => live.pressButton(param, false),
+        onPointerCancel: (_) => live.pressButton(param, false),
+        child: button,
+      ),
+    );
   }
 }

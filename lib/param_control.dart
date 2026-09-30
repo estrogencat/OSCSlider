@@ -2,7 +2,13 @@ import 'dart:math';
 
 import 'package:flutter/material.dart';
 
-enum ParamType { slider, toggle, custom }
+// button: momentary - pressed while held (or for a short tap), released
+// after. chatbox: VRChat's /chatbox/input text box.
+enum ParamType { slider, toggle, custom, button, chatbox }
+
+// a button either stays pressed for as long as it's held, or sends a short
+// press-and-release pulse per click.
+enum ButtonMode { hold, tap }
 
 // only relevant for ParamType.slider - which OSC numeric type to wire-encode as.
 enum NumericKind { float, int }
@@ -183,9 +189,11 @@ class ParamSchedule {
   bool enabled;
   ScheduleKind kind;
 
-  // timeOfDay - fires once per day at this clock time.
+  // timeOfDay - fires once per day at this clock time, on these weekdays
+  // (DateTime.monday..sunday; empty = every day).
   int timeOfDayHour;
   int timeOfDayMinute;
+  List<int> daysOfWeek;
 
   // interval - fires every N seconds, repeating.
   double intervalSeconds;
@@ -210,13 +218,14 @@ class ParamSchedule {
     this.kind = ScheduleKind.timeOfDay,
     this.timeOfDayHour = 21,
     this.timeOfDayMinute = 0,
+    List<int>? daysOfWeek,
     this.intervalSeconds = 1800,
     this.idleSeconds = 300,
     this.countdownSeconds = 60,
     this.targetValue = 1.0,
     this.targetBool = true,
     this.revertAfterSeconds = 0,
-  });
+  }) : daysOfWeek = daysOfWeek ?? [];
 
   factory ParamSchedule.fromJson(Map<String, dynamic> json) {
     return ParamSchedule(
@@ -229,6 +238,13 @@ class ParamSchedule {
       },
       timeOfDayHour: (json['timeOfDayHour'] as num?)?.toInt() ?? 21,
       timeOfDayMinute: (json['timeOfDayMinute'] as num?)?.toInt() ?? 0,
+      daysOfWeek: ((json['daysOfWeek'] as List?) ?? const [])
+          .whereType<num>()
+          .map((d) => d.toInt())
+          .where((d) => d >= 1 && d <= 7)
+          .toSet()
+          .toList()
+        ..sort(),
       intervalSeconds: (json['intervalSeconds'] as num?)?.toDouble() ?? 1800,
       idleSeconds: (json['idleSeconds'] as num?)?.toDouble() ?? 300,
       countdownSeconds: (json['countdownSeconds'] as num?)?.toDouble() ?? 60,
@@ -249,6 +265,7 @@ class ParamSchedule {
       },
       'timeOfDayHour': timeOfDayHour,
       'timeOfDayMinute': timeOfDayMinute,
+      if (daysOfWeek.isNotEmpty) 'daysOfWeek': daysOfWeek,
       'intervalSeconds': intervalSeconds,
       'idleSeconds': idleSeconds,
       'countdownSeconds': countdownSeconds,
@@ -364,10 +381,28 @@ class ParamControl {
   // toggle fields
   bool defaultBool;
 
+  // slider extras: snap to multiples of [step] (0 = continuous), and jump
+  // back to [defaultValue] when released - for VRChat's /input axes, which
+  // keep moving you until they're reset to 0.
+  double step;
+  bool springBack;
+
   // custom fields - a free-typed OSC type tag (e.g. "f","i","d","s","T","F")
   // and its value as text, for types this app has no dedicated widget for.
+  // chatbox params keep their draft message in customValueText too.
   String customTypeTag;
   String customValueText;
+
+  // button fields. VRChat's /input buttons want an int 1/0, avatar bool
+  // parameters want true/false.
+  ButtonMode buttonMode;
+  bool buttonSendsInt;
+  int tapMillis;
+
+  // chatbox fields - see VRChat's /chatbox/input s b n.
+  bool chatboxSendImmediately;
+  bool chatboxNotify;
+  bool chatboxTypingIndicator;
 
   // null = no automation/schedule configured. sliders and toggles only.
   Automation? automation;
@@ -383,11 +418,26 @@ class ParamControl {
     this.defaultValue = 0.0,
     this.numericKind = NumericKind.float,
     this.defaultBool = false,
+    this.step = 0,
+    this.springBack = false,
     this.customTypeTag = 'f',
     this.customValueText = '0',
+    this.buttonMode = ButtonMode.hold,
+    this.buttonSendsInt = true,
+    this.tapMillis = 100,
+    this.chatboxSendImmediately = true,
+    this.chatboxNotify = true,
+    this.chatboxTypingIndicator = true,
     this.automation,
     this.schedule,
   });
+
+  /// what a trigger, sequence or snapshot sees this parameter as - buttons
+  /// behave like toggles (pressed/released), chatboxes have no value.
+  bool get isBoolLike => type == ParamType.toggle || type == ParamType.button;
+
+  /// sliders and toggles can carry an automation/schedule.
+  bool get isAutomatable => type == ParamType.slider || type == ParamType.toggle;
 
   factory ParamControl.fromJson(Map<String, dynamic> json) {
     final name = '${json['name'] ?? ''}';
@@ -395,6 +445,8 @@ class ParamControl {
     final type = switch (typeStr) {
       'toggle' => ParamType.toggle,
       'custom' => ParamType.custom,
+      'button' => ParamType.button,
+      'chatbox' => ParamType.chatbox,
       _ => ParamType.slider,
     };
     final rawDefault = json['default'];
@@ -411,8 +463,16 @@ class ParamControl {
       defaultValue: rawDefault is num ? rawDefault.toDouble() : 0.0,
       numericKind: (json['numericKind'] as String?) == 'int' ? NumericKind.int : NumericKind.float,
       defaultBool: rawDefault is bool ? rawDefault : false,
+      step: ((json['step'] as num?)?.toDouble() ?? 0).abs(),
+      springBack: (json['springBack'] as bool?) ?? false,
       customTypeTag: (json['customTypeTag'] as String?) ?? 'f',
-      customValueText: (json['customValueText'] as String?) ?? '0',
+      customValueText: (json['customValueText'] as String?) ?? (type == ParamType.chatbox ? '' : '0'),
+      buttonMode: (json['buttonMode'] as String?) == 'tap' ? ButtonMode.tap : ButtonMode.hold,
+      buttonSendsInt: (json['buttonSendsInt'] as bool?) ?? true,
+      tapMillis: ((json['tapMillis'] as num?)?.toInt() ?? 100).clamp(10, 10000),
+      chatboxSendImmediately: (json['chatboxSendImmediately'] as bool?) ?? true,
+      chatboxNotify: (json['chatboxNotify'] as bool?) ?? true,
+      chatboxTypingIndicator: (json['chatboxTypingIndicator'] as bool?) ?? true,
       automation: rawAutomation == null ? null : Automation.fromJson(rawAutomation),
       schedule: rawSchedule == null ? null : ParamSchedule.fromJson(rawSchedule),
     );
@@ -426,13 +486,23 @@ class ParamControl {
         ParamType.toggle => 'toggle',
         ParamType.custom => 'custom',
         ParamType.slider => 'slider',
+        ParamType.button => 'button',
+        ParamType.chatbox => 'chatbox',
       },
       if (category != null) 'category': category,
       if (type == ParamType.slider) 'min': min,
       if (type == ParamType.slider) 'max': max,
       if (type == ParamType.slider) 'numericKind': numericKind == NumericKind.int ? 'int' : 'float',
+      if (type == ParamType.slider && step > 0) 'step': step,
+      if (type == ParamType.slider && springBack) 'springBack': true,
       if (type == ParamType.custom) 'customTypeTag': customTypeTag,
-      if (type == ParamType.custom) 'customValueText': customValueText,
+      if (type == ParamType.custom || type == ParamType.chatbox) 'customValueText': customValueText,
+      if (type == ParamType.button) 'buttonMode': buttonMode == ButtonMode.tap ? 'tap' : 'hold',
+      if (type == ParamType.button) 'buttonSendsInt': buttonSendsInt,
+      if (type == ParamType.button) 'tapMillis': tapMillis,
+      if (type == ParamType.chatbox) 'chatboxSendImmediately': chatboxSendImmediately,
+      if (type == ParamType.chatbox) 'chatboxNotify': chatboxNotify,
+      if (type == ParamType.chatbox) 'chatboxTypingIndicator': chatboxTypingIndicator,
       if (automation != null) 'automation': automation!.toJson(),
       if (schedule != null) 'schedule': schedule!.toJson(),
       'default': type == ParamType.toggle ? defaultBool : defaultValue,
@@ -562,6 +632,8 @@ class SequenceStep {
   // (toggles, which have no meaningful mid-transition state).
   // wait: how long to pause before advancing.
   double durationSeconds;
+  // chatbox targets: the message this step sends.
+  String text;
 
   SequenceStep({
     required this.kind,
@@ -569,6 +641,7 @@ class SequenceStep {
     this.targetValue = 0.0,
     this.targetBool = false,
     this.durationSeconds = 1.0,
+    this.text = '',
   });
 
   factory SequenceStep.fromJson(Map<String, dynamic> json) {
@@ -578,6 +651,7 @@ class SequenceStep {
       targetValue: (json['targetValue'] as num?)?.toDouble() ?? 0.0,
       targetBool: (json['targetBool'] as bool?) ?? false,
       durationSeconds: (json['durationSeconds'] as num?)?.toDouble() ?? 1.0,
+      text: (json['text'] as String?) ?? '',
     );
   }
 
@@ -588,6 +662,7 @@ class SequenceStep {
       'targetValue': targetValue,
       'targetBool': targetBool,
       'durationSeconds': durationSeconds,
+      if (text.isNotEmpty) 'text': text,
     };
   }
 }
@@ -784,6 +859,18 @@ class AppConfig {
   // doing and triggers can react to in-game changes.
   bool syncFromVrchat;
 
+  // Auto Mode: also make a new profile the first time an avatar is seen
+  // (false = only switch between profiles that are already linked).
+  bool autoProfileCreate;
+
+  // the classic fixed listen port, used only as a fallback for OSC apps
+  // without OSCQuery. null = send port + 1 (VRChat's 9000/9001 pairing).
+  int? listenPort;
+
+  // extra destinations: VRChat's output relayed on to other apps, and/or
+  // this app's own sends mirrored to them.
+  final List<ForwardTarget> forwardTargets;
+
   // how long to wait on VRChat's OSCQuery server before falling back to
   // something else - it's been observed to hang outright for some avatars.
   // Settings > Miscellaneous, developer mode only.
@@ -819,6 +906,9 @@ class AppConfig {
     List<String>? automationMasterSwitchParams,
     this.liveParamNoiseThreshold = 10,
     this.syncFromVrchat = true,
+    this.autoProfileCreate = true,
+    this.listenPort,
+    List<ForwardTarget>? forwardTargets,
     this.oscQueryFetchTimeoutSeconds = 5,
     this.primaryOverride,
     this.secondaryOverride,
@@ -827,7 +917,8 @@ class AppConfig {
   })  : profiles = profiles ?? [Profile(id: 'default', name: 'Default', parameters: parameters ?? [])],
         activeProfileId = activeProfileId ??
             (profiles != null && profiles.isNotEmpty ? profiles.first.id : 'default'),
-        automationMasterSwitchParams = automationMasterSwitchParams ?? [] {
+        automationMasterSwitchParams = automationMasterSwitchParams ?? [],
+        forwardTargets = forwardTargets ?? [] {
     sanitize();
   }
 
@@ -908,6 +999,13 @@ class AppConfig {
           ((json['automationMasterSwitchParams'] as List?) ?? const []).whereType<String>().toList(),
       liveParamNoiseThreshold: (json['liveParamNoiseThreshold'] as num?)?.toInt() ?? 10,
       syncFromVrchat: (json['syncFromVrchat'] as bool?) ?? true,
+      autoProfileCreate: (json['autoProfileCreate'] as bool?) ?? true,
+      listenPort: _validPort((json['listenPort'] as num?)?.toInt()),
+      forwardTargets: ((json['forwardTargets'] as List?) ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .map(ForwardTarget.fromJson)
+          .whereType<ForwardTarget>()
+          .toList(),
       oscQueryFetchTimeoutSeconds: (json['oscQueryFetchTimeoutSeconds'] as num?)?.toInt() ?? 5,
       primaryOverride: colorFromHex(json['primaryOverride'] as String?),
       secondaryOverride: colorFromHex(json['secondaryOverride'] as String?),
@@ -930,6 +1028,9 @@ class AppConfig {
       'automationMasterSwitchParams': automationMasterSwitchParams,
       'liveParamNoiseThreshold': liveParamNoiseThreshold,
       'syncFromVrchat': syncFromVrchat,
+      'autoProfileCreate': autoProfileCreate,
+      if (listenPort != null) 'listenPort': listenPort,
+      if (forwardTargets.isNotEmpty) 'forwardTargets': forwardTargets.map((t) => t.toJson()).toList(),
       'oscQueryFetchTimeoutSeconds': oscQueryFetchTimeoutSeconds,
       if (primaryOverride != null) 'primaryOverride': colorToHex(primaryOverride!),
       if (secondaryOverride != null) 'secondaryOverride': colorToHex(secondaryOverride!),
@@ -939,6 +1040,58 @@ class AppConfig {
       'profiles': profiles.map((p) => p.toJson()).toList(),
     };
   }
+}
+
+/// the fixed listen port actually in use - see [AppConfig.listenPort].
+int effectiveListenPort(AppConfig config) => config.listenPort ?? (config.port >= 65535 ? 9001 : config.port + 1);
+
+/// which way a [ForwardTarget] relays.
+enum ForwardDirection { incoming, outgoing, both }
+
+/// another OSC app to relay traffic to - handy for tools that can't use
+/// OSCQuery and would otherwise need port 9001 to themselves.
+class ForwardTarget {
+  String host;
+  int port;
+  bool enabled;
+  ForwardDirection direction;
+  String label;
+
+  ForwardTarget({
+    required this.host,
+    required this.port,
+    this.enabled = true,
+    this.direction = ForwardDirection.incoming,
+    this.label = '',
+  });
+
+  bool get relaysIncoming => enabled && direction != ForwardDirection.outgoing;
+  bool get mirrorsOutgoing => enabled && direction != ForwardDirection.incoming;
+
+  static ForwardTarget? fromJson(Map<String, dynamic> json) {
+    final port = _validPort((json['port'] as num?)?.toInt());
+    final host = _nonEmpty(json['host'] as String?);
+    if (port == null || host == null) return null;
+    return ForwardTarget(
+      host: host,
+      port: port,
+      enabled: (json['enabled'] as bool?) ?? true,
+      direction: switch (json['direction'] as String?) {
+        'outgoing' => ForwardDirection.outgoing,
+        'both' => ForwardDirection.both,
+        _ => ForwardDirection.incoming,
+      },
+      label: (json['label'] as String?) ?? '',
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'host': host,
+        'port': port,
+        'enabled': enabled,
+        'direction': direction.name,
+        if (label.isNotEmpty) 'label': label,
+      };
 }
 
 String? _nonEmpty(String? s) => (s == null || s.trim().isEmpty) ? null : s.trim();

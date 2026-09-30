@@ -129,7 +129,9 @@ class _HomePageState extends State<HomePage> {
         }
       });
       if (widget.startServices) {
-        unawaited(oscInputHub.start(legacyPort: config.port + 1));
+        // reconciling again once the service is up lets forwarding skip
+        // this app's own (now known) ports.
+        unawaited(oscInputHub.start(legacyPort: effectiveListenPort(config)).then((_) => _live?.reconcile()));
       }
     } on ConfigLoadException catch (e) {
       if (mounted) setState(() => _loadError = e);
@@ -413,16 +415,18 @@ class _HomePageState extends State<HomePage> {
       ),
       items: [
         const PopupMenuItem(value: 'edit', child: ListTile(leading: Icon(Icons.edit_outlined), title: Text('Edit'))),
-        const PopupMenuItem(
-          value: 'automation',
-          child: ListTile(leading: Icon(Icons.auto_awesome_outlined), title: Text('Automation...')),
-        ),
-        if (param.type != ParamType.custom)
+        if (param.isAutomatable)
+          const PopupMenuItem(
+            value: 'automation',
+            child: ListTile(leading: Icon(Icons.auto_awesome_outlined), title: Text('Automation...')),
+          ),
+        if (param.isAutomatable)
           const PopupMenuItem(
             value: 'fetch',
             child: ListTile(leading: Icon(Icons.download_outlined), title: Text('Fetch value from VRChat')),
           ),
-        const PopupMenuItem(value: 'resend', child: ListTile(leading: Icon(Icons.replay), title: Text('Resend value'))),
+        if (param.type != ParamType.chatbox)
+          const PopupMenuItem(value: 'resend', child: ListTile(leading: Icon(Icons.replay), title: Text('Resend value'))),
         const PopupMenuItem(
           value: 'delete',
           child: ListTile(leading: Icon(Icons.delete_outline), title: Text('Delete')),
@@ -513,9 +517,9 @@ class _HomePageState extends State<HomePage> {
       case 'resend':
         if (live == null) return;
         for (final p in live.parameters) {
-          if (p.type != ParamType.custom) live.resend(p);
+          if (p.isAutomatable) live.resend(p);
         }
-        _notice('Resent ${live.parameters.where((p) => p.type != ParamType.custom).length} values.');
+        _notice('Resent ${live.parameters.where((p) => p.isAutomatable).length} values.');
       case 'reload':
         await _load();
         _notice('Reloaded config.json');
@@ -772,7 +776,7 @@ class _HomePageState extends State<HomePage> {
                       key: ValueKey('card:${p.name}'),
                       param: p,
                       live: live,
-                      automationButton: p.type == ParamType.custom ? null : _automationButton(p),
+                      automationButton: p.isAutomatable ? _automationButton(p) : null,
                       onMenu: (pos) => _showParamMenu(pos, p),
                     ),
                   ),

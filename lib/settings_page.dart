@@ -40,6 +40,8 @@ class _SettingsPageState extends State<SettingsPage> {
   late final TextEditingController _portController;
   late final TextEditingController _liveParamNoiseThresholdController;
   late final TextEditingController _oscQueryFetchTimeoutController;
+  late final TextEditingController _listenPortController;
+  String? _listenPortError;
   String? _hostError;
   String? _portError;
   String _appVersion = '';
@@ -56,6 +58,7 @@ class _SettingsPageState extends State<SettingsPage> {
     _portController = TextEditingController(text: config.port.toString());
     _liveParamNoiseThresholdController = TextEditingController(text: config.liveParamNoiseThreshold.toString());
     _oscQueryFetchTimeoutController = TextEditingController(text: config.oscQueryFetchTimeoutSeconds.toString());
+    _listenPortController = TextEditingController(text: config.listenPort?.toString() ?? '');
     PackageInfo.fromPlatform().then((info) {
       if (mounted) setState(() => _appVersion = info.version);
     }).catchError((_) {});
@@ -67,6 +70,7 @@ class _SettingsPageState extends State<SettingsPage> {
     _portController.dispose();
     _liveParamNoiseThresholdController.dispose();
     _oscQueryFetchTimeoutController.dispose();
+    _listenPortController.dispose();
     super.dispose();
   }
 
@@ -110,6 +114,120 @@ class _SettingsPageState extends State<SettingsPage> {
     if (parsed == config.liveParamNoiseThreshold) return;
     setState(() => config.liveParamNoiseThreshold = parsed);
     _persist();
+  }
+
+  void _setListenPort(String text) {
+    final trimmed = text.trim();
+    final port = trimmed.isEmpty ? null : int.tryParse(trimmed);
+    if (trimmed.isNotEmpty && (port == null || port < 1 || port > 65535)) {
+      setState(() => _listenPortError = 'Port must be 1-65535, or empty for the default');
+      return;
+    }
+    if (_listenPortError != null) setState(() => _listenPortError = null);
+    if (port == config.listenPort) return;
+    config.listenPort = port;
+    _changed();
+  }
+
+  Future<void> _editForwardTarget(ForwardTarget? existing) async {
+    final label = TextEditingController(text: existing?.label ?? '');
+    final host = TextEditingController(text: existing?.host ?? '127.0.0.1');
+    final port = TextEditingController(text: existing?.port.toString() ?? '');
+    var direction = existing?.direction ?? ForwardDirection.incoming;
+    String? error;
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text(existing == null ? 'Forward to another app' : 'Edit forwarding'),
+          content: SizedBox(
+            width: 420,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                TextField(controller: label, decoration: const InputDecoration(labelText: 'Name (optional)')),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(flex: 3, child: TextField(controller: host, decoration: const InputDecoration(labelText: 'Host'))),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: TextField(
+                        controller: port,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(labelText: 'Port'),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                SegmentedButton<ForwardDirection>(
+                  segments: const [
+                    ButtonSegment(value: ForwardDirection.incoming, label: Text('VRChat output')),
+                    ButtonSegment(value: ForwardDirection.outgoing, label: Text('My sends')),
+                    ButtonSegment(value: ForwardDirection.both, label: Text('Both')),
+                  ],
+                  selected: {direction},
+                  onSelectionChanged: (s) => setDialogState(() => direction = s.first),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  switch (direction) {
+                    ForwardDirection.incoming =>
+                      'Everything VRChat sends out (parameter changes, avatar changes) is copied here - point '
+                          'an old OSC app at this port instead of 9001.',
+                    ForwardDirection.outgoing =>
+                      'Everything this app sends to VRChat is copied here too - e.g. a second PC or a lighting rig.',
+                    ForwardDirection.both => 'Both of the above.',
+                  },
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                if (error != null) ...[
+                  const SizedBox(height: 8),
+                  Text(error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
+            FilledButton(
+              onPressed: () {
+                final p = int.tryParse(port.text.trim());
+                final h = host.text.trim();
+                if (h.isEmpty || h.contains(' ') || h.contains('/')) {
+                  setDialogState(() => error = 'Enter an IP address or host name');
+                } else if (p == null || p < 1 || p > 65535) {
+                  setDialogState(() => error = 'Port must be 1-65535');
+                } else if (direction != ForwardDirection.outgoing &&
+                    (h == '127.0.0.1' || h == 'localhost') &&
+                    p == config.port) {
+                  // VRChat's own input port - its output would loop straight back in.
+                  setDialogState(() => error = 'That\'s VRChat\'s input port - its output would loop back into it');
+                } else {
+                  Navigator.of(context).pop(true);
+                }
+              },
+              child: const Text('Save'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (saved == true) {
+      final target = existing ?? ForwardTarget(host: '', port: 0);
+      target
+        ..label = label.text.trim()
+        ..host = host.text.trim()
+        ..port = int.parse(port.text.trim())
+        ..direction = direction;
+      if (existing == null) config.forwardTargets.add(target);
+      _changed();
+    }
+    label.dispose();
+    host.dispose();
+    port.dispose();
   }
 
   // developer-mode-only since the server it targets can hang outright.
@@ -444,6 +562,7 @@ class _SettingsPageState extends State<SettingsPage> {
     _portController.text = fresh.port.toString();
     _liveParamNoiseThresholdController.text = fresh.liveParamNoiseThreshold.toString();
     _oscQueryFetchTimeoutController.text = fresh.oscQueryFetchTimeoutSeconds.toString();
+    _listenPortController.text = '';
     _persist();
   }
 
@@ -585,6 +704,75 @@ class _SettingsPageState extends State<SettingsPage> {
           '${oscInputHub.service?.oscPort != null ? ' (listening on port ${oscInputHub.service!.oscPort})' : ''}',
           style: theme.textTheme.bodySmall,
         ),
+        _sectionTitle(
+          context,
+          'Other OSC apps',
+          trailing: TextButton.icon(
+            onPressed: () => _editForwardTarget(null),
+            icon: const Icon(Icons.add),
+            label: const Text('Forward to...'),
+          ),
+        ),
+        Text(
+          'Relay VRChat\'s output on to apps that can\'t use OSCQuery (so they don\'t need port 9001 to '
+          'themselves), and/or copy everything this app sends to another device.',
+          style: theme.textTheme.bodySmall,
+        ),
+        const SizedBox(height: 4),
+        for (final target in config.forwardTargets)
+          Card(
+            margin: const EdgeInsets.symmetric(vertical: 3),
+            child: ListTile(
+              dense: true,
+              leading: Switch(
+                value: target.enabled,
+                onChanged: (v) {
+                  target.enabled = v;
+                  _changed();
+                },
+              ),
+              title: Text(target.label.isEmpty ? '${target.host}:${target.port}' : target.label),
+              subtitle: Text([
+                if (target.label.isNotEmpty) '${target.host}:${target.port}',
+                switch (target.direction) {
+                  ForwardDirection.incoming => 'VRChat\'s output → here',
+                  ForwardDirection.outgoing => 'this app\'s sends → here',
+                  ForwardDirection.both => 'both directions → here',
+                },
+              ].join('  ·  ')),
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(icon: const Icon(Icons.edit_outlined), onPressed: () => _editForwardTarget(target)),
+                  IconButton(
+                    icon: const Icon(Icons.delete_outline),
+                    onPressed: () {
+                      config.forwardTargets.remove(target);
+                      _changed();
+                    },
+                  ),
+                ],
+              ),
+            ),
+          ),
+        const SizedBox(height: 8),
+        TextField(
+          controller: _listenPortController,
+          keyboardType: TextInputType.number,
+          decoration: InputDecoration(
+            labelText: 'Fallback listen port',
+            hintText: '${config.port + 1} (send port + 1)',
+            helperText: 'Only used for OSC software without OSCQuery - VRChat doesn\'t need it. Change it if '
+                'you launch VRChat with a custom --osc output port.',
+            helperMaxLines: 2,
+            errorText: _listenPortError,
+          ),
+          onSubmitted: _setListenPort,
+          onTapOutside: (_) {
+            _setListenPort(_listenPortController.text);
+            FocusManager.instance.primaryFocus?.unfocus();
+          },
+        ),
         _sectionTitle(context, 'Theme Color'),
         Wrap(
           spacing: 10,
@@ -686,6 +874,18 @@ class _SettingsPageState extends State<SettingsPage> {
             config.autoProfileMode = v;
             _changed();
           },
+        ),
+        SwitchListTile(
+          contentPadding: const EdgeInsets.only(left: 16),
+          title: const Text('Create profiles for new avatars'),
+          subtitle: const Text('Off: only switch between profiles you\'ve already linked to an avatar'),
+          value: config.autoProfileCreate,
+          onChanged: config.autoProfileMode
+              ? (v) {
+                  config.autoProfileCreate = v;
+                  _changed();
+                }
+              : null,
         ),
         _sectionTitle(
           context,
@@ -890,6 +1090,8 @@ class _SettingsPageState extends State<SettingsPage> {
       ParamType.slider => 'slider (${param.numericKind == NumericKind.int ? 'int' : 'float'})',
       ParamType.toggle => 'toggle',
       ParamType.custom => 'custom (${param.customTypeTag})',
+      ParamType.button => 'button (${param.buttonMode == ButtonMode.hold ? 'hold' : 'tap'})',
+      ParamType.chatbox => 'chatbox',
     };
   }
 }

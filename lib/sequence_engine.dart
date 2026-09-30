@@ -32,8 +32,9 @@ class SequenceEngine {
     List<ParamControl> parameters,
     Map<String, Object> currentValues,
     void Function(ParamControl param, double value) onSlider,
-    void Function(ParamControl param, bool value) onToggle,
-  ) {
+    void Function(ParamControl param, bool value) onToggle, {
+    void Function(ParamControl param, String text)? onText,
+  }) {
     final now = DateTime.now();
     final liveIds = <String>{};
     for (final seq in sequences) {
@@ -44,7 +45,7 @@ class SequenceEngine {
       // instead of one per tick, so "set A, set B" really is simultaneous.
       // bounded, so an all-instant looping sequence can't spin forever.
       for (var guard = 0; guard <= seq.steps.length && seq.enabled; guard++) {
-        if (!_tickStep(seq, state, now, parameters, currentValues, onSlider, onToggle)) break;
+        if (!_tickStep(seq, state, now, parameters, currentValues, onSlider, onToggle, onText)) break;
       }
     }
     _runtime.removeWhere((id, _) => !liveIds.contains(id));
@@ -67,6 +68,7 @@ class SequenceEngine {
     Map<String, Object> currentValues,
     void Function(ParamControl, double) onSlider,
     void Function(ParamControl, bool) onToggle,
+    void Function(ParamControl, String)? onText,
   ) {
     if (state.stepIndex >= seq.steps.length) {
       // steps were deleted out from under a running sequence.
@@ -96,7 +98,25 @@ class SequenceEngine {
       return true;
     }
 
-    if (param.type == ParamType.slider) {
+    if (param.type == ParamType.button) {
+      // held down for the step's duration (at least a brief tap, so VRChat
+      // registers it), then released.
+      if (!state.valueApplied) {
+        onToggle(param, true);
+        state.valueApplied = true;
+      }
+      if (elapsed < (duration < 0.05 ? 0.05 : duration)) return false;
+      onToggle(param, false);
+      _advance(seq, state, now);
+      return true;
+    } else if (param.type == ParamType.chatbox) {
+      // sends the message once, then durationSeconds is how long to wait.
+      if (!state.valueApplied) {
+        onText?.call(param, step.text);
+        state.valueApplied = true;
+      }
+      if (elapsed < duration) return false;
+    } else if (param.type == ParamType.slider) {
       state.stepStartValue ??= sliderValueOf(currentValues, param);
       final t = duration <= 0 ? 1.0 : (elapsed / duration).clamp(0.0, 1.0);
       onSlider(param, state.stepStartValue! + (step.targetValue - state.stepStartValue!) * t);

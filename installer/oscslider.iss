@@ -7,6 +7,10 @@
 #ifndef AppVersion
   #define AppVersion "1.0.0"
 #endif
+; the file-version resource has to be purely numeric (no "-beta.1").
+#ifndef AppNumericVersion
+  #define AppNumericVersion "1.0.0"
+#endif
 #define AppPublisher "OSCSlider"
 #define AppExeName "OSCSlider.exe"
 #define ReleaseDir "..\build\windows\x64\runner\Release"
@@ -15,6 +19,7 @@
 AppId={{6F5215C0-AFFC-4636-8DA5-FF65CDA7723A}
 AppName={#AppName}
 AppVersion={#AppVersion}
+VersionInfoVersion={#AppNumericVersion}
 AppPublisher={#AppPublisher}
 DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}

@@ -8,7 +8,8 @@ Sliders, toggles, automations and sequences, with your avatar's parameters disco
 [![Latest release](https://img.shields.io/github/v/release/estrogencat/OSCSlider?label=download)](../../releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/estrogencat/OSCSlider/total)](../../releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-![Windows](https://img.shields.io/badge/platform-Windows-0078D4)
+[![CI](../../actions/workflows/ci.yml/badge.svg)](../../actions/workflows/ci.yml)
+![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20%7C%20macOS-555)
 
 </div>
 
@@ -17,7 +18,14 @@ Sliders, toggles, automations and sequences, with your avatar's parameters disco
 
 ## Getting started
 
-1. Grab **`OSCSlider-Setup.exe`** from the [latest release](../../releases/latest), or the portable `.zip` if you'd rather not install anything.
+1. Grab a build from the [latest release](../../releases/latest):
+
+   | Platform | Download |
+   | --- | --- |
+   | Windows | `OSCSlider-Setup.exe`, or the portable `.zip` |
+   | Linux (x64) | **`OSCSlider-x86_64.AppImage`**: one file, just make it executable and run it<br>`oscslider_<version>_amd64.deb` for Debian/Ubuntu<br>`OSCSlider-linux-x64.tar.gz`: a plain folder, with `./install.sh` to add it to your app menu |
+   | macOS (Intel + Apple Silicon) | **`OSCSlider-macos.dmg`**: open it and drag OSCSlider into Applications<br>`OSCSlider-macos.zip` if you'd rather skip the disk image<br>(see the [FAQ](#faq) for opening an unsigned app) |
+
 2. In VRChat, turn on OSC: **Action Menu → Options → OSC → Enabled**.
 3. Open OSCSlider and hit **Discover** (the wifi-search icon in the title bar) to pull in your current avatar's parameters.
 
@@ -29,7 +37,10 @@ The chip in the title bar turns green once VRChat is found.
 ## Features
 
 ### Controls
-- **Sliders** (float or int) and **toggles** for any avatar parameter. Int sliders snap to whole numbers.
+- **Sliders** (float or int) and **toggles** for any avatar parameter. Int sliders snap to whole numbers, floats can snap to a step, and sliders can **spring back** when released, like a joystick.
+- **Buttons**: hold them down, or tap for a quick press and release.
+- **Chatbox**: type into your VRChat chatbox, with the typing bubble while you write and a 144-character counter.
+- **VRChat controls library**: VRChat's own OSC controls, ready to add without typing addresses. Movement and look axes, jump, run, grab/use/drop, voice, Quick Menu, Safe Mode, chatbox, and avatar height.
 - **Custom** parameters for any OSC type (int64, double, string, color, MIDI, blob, time tag...) and any address. Start a name with `/` to send somewhere other than `/avatar/parameters/`.
 - **Live sync** from VRChat. Changes made in-game (radial menu, contacts, physbones) show up on the dashboard as they happen.
 - A grid that uses the space on a wide window, collapsible categories, and a <kbd>⋮</kbd> / right-click menu on every parameter.
@@ -48,17 +59,21 @@ Give any slider or toggle a life of its own:
 | **Ramp** | Glides between two values. Once, loop or ping-pong, with a repeat count, per-repeat speed change, and linear / ease / sine / hand-drawn easing curves |
 | **Random** | Picks a new value (or flips a toggle) at random intervals, optionally drifting smoothly |
 | **Blink** | Cycles a toggle on and off |
-| **Schedule** | Fires at a time of day, every N seconds, after you've been idle, or once after a countdown. Can auto-revert for a pulse |
+| **Schedule** | Fires at a time of day (on chosen weekdays), every N seconds, after you've been idle, or once after a countdown. Can auto-revert for a pulse |
 
 Any automation can be **triggered by another parameter**: when a toggle turns on or off, while it's on, when a slider crosses a threshold, and more. It can also fire only every N activations.
 
 ### Sequences
-Script changes across several parameters: *set a value, wait, glide another, loop*. Sequences can be triggered like automations, and can run their own per-parameter automations that only live while the sequence runs. The app keeps sequences and automations from fighting over the same parameter.
+Script changes across several parameters: *set a value, wait, glide another, press a button, say something in the chatbox, loop*. Sequences can be triggered like automations, and can run their own per-parameter automations that only live while the sequence runs. The app keeps sequences and automations from fighting over the same parameter.
 
 ### Profiles & snapshots
-- A separate parameter set per avatar. **Auto mode** switches (or creates) profiles when you change avatar, named after the avatar.
+- A separate parameter set per avatar. **Auto mode** switches profiles when you change avatar, picking up the one you're already wearing. It can also create profiles for new avatars, named after the avatar, or only switch between ones you've already linked.
 - Duplicate profiles, or share them as JSON via the clipboard.
 - **Snapshots** freeze the current values under a name so you can apply them again later.
+
+### Other OSC apps
+- **Forwarding**: relay VRChat's output to apps that can't use OSCQuery, so they don't need port 9001 to themselves. You can also copy everything OSCSlider sends to another device.
+- A configurable fallback listen port, for when VRChat is launched with a custom `--osc` output port.
 
 ### Everything else
 - A Material You theme picker, with presets or a custom colour wheel.
@@ -103,7 +118,27 @@ Set **Send to host** in Settings to your Quest's IP address. Sending works, but 
 <details>
 <summary><strong>Where are my settings stored?</strong></summary>
 
-In `%APPDATA%\OSCSlider\`: `config.json`, a `config.json.bak` from the last launch where the config loaded fine, and `crash.log` if anything went wrong. *⋮ → Open config folder* takes you there.
+| Platform | Folder |
+| --- | --- |
+| Windows | `%APPDATA%\OSCSlider\` |
+| Linux | `~/.config/OSCSlider/` (or `$XDG_CONFIG_HOME/OSCSlider/`) |
+| macOS | `~/Library/Containers/com.estrogencat.oscslider/Data/Library/Application Support/OSCSlider/` |
+
+Inside are `config.json`, a `config.json.bak` from the last launch where the config loaded fine, and `crash.log` if anything went wrong. *⋮ → Open config folder* takes you there.
+
+</details>
+
+<details>
+<summary><strong>Does it work with VRChat on Linux (Proton)?</strong></summary>
+
+Yes, run the native Linux build alongside VRChat. Sending works like it does on Windows. Discovery also reads VRChat's saved avatar configs from its Proton prefix, in any Steam library, including Flatpak and Snap Steam. Whether VRChat under Proton finds the app over OSCQuery depends on Wine's networking; if it doesn't, the app falls back to port 9001 for receiving.
+
+</details>
+
+<details>
+<summary><strong>macOS says the app can't be opened</strong></summary>
+
+The macOS build isn't signed with an Apple developer certificate. Right-click the app and choose **Open** the first time, or run `xattr -dr com.apple.quarantine /path/to/OSCSlider.app`. It needs macOS 12 or newer, which includes older Macs running [OpenCore Legacy Patcher](https://dortania.github.io/OpenCore-Legacy-Patcher/). Since VRChat itself doesn't run on macOS, it's mostly useful for controlling VRChat on another PC or Quest on your network, or other OSC software.
 
 </details>
 
@@ -121,13 +156,17 @@ Yes. The x64 build runs through Windows' built-in emulation. Flutter doesn't off
 
 ### Build
 
-Requires the Flutter SDK with Windows desktop support.
+Requires the Flutter SDK. Build on the platform you're targeting:
 
 ```bash
 flutter pub get
-flutter build windows --release   # output: build/windows/x64/runner/Release/
+flutter build windows --release   # build/windows/x64/runner/Release/
+flutter build linux --release     # build/linux/x64/release/bundle/
+flutter build macos --release     # build/macos/Build/Products/Release/OSCSlider.app
 flutter test                      # optional
 ```
+
+On Linux you'll also need the GTK toolchain: `sudo apt install clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev` (or your distro's equivalent). macOS needs Xcode.
 
 ### Installer
 
@@ -140,7 +179,13 @@ Requires [Inno Setup 6](https://jrsoftware.org/isinfo.php). Build the release bi
 > [!IMPORTANT]
 > Run that from PowerShell, not Git Bash or `cmd`. Bash's path translation mangles the `/D` define, and Inno Setup fails with a confusing "you may not specify more than one script filename" error.
 
-The installer lands in `installer/Output/`. Pushing a `v*` tag builds both the installer and the portable zip and attaches them to a GitHub release automatically.
+The installer lands in `installer/Output/`.
+
+### Releases & CI
+
+- Every push and pull request runs `flutter analyze` and `flutter test` ([CI](.github/workflows/ci.yml)).
+- Pushing a `v*` tag builds Windows (installer + zip), Linux (AppImage, `.deb`, tarball) and macOS (`.dmg` + zip), then publishes a release with generated notes and a `SHA256SUMS.txt` ([Release](.github/workflows/release.yml)). Tags with a suffix, like `v1.2.0-beta.1`, become pre-releases, which the in-app update check ignores.
+- Running the Release workflow by hand builds everything as downloadable artifacts, without publishing.
 
 ### Project layout
 
@@ -153,7 +198,11 @@ The installer lands in `installer/Output/`. Pushing a `v*` tag builds both the i
 | `lib/oscquery_service.dart`, `mdns_codec.dart` | The app's own OSCQuery service: loopback HTTP + UDP, and a small mDNS responder |
 | `lib/osc_input_hub.dart` | All incoming OSC in one stream, plus the connection status |
 | `lib/oscquery_client.dart`, `discovery_flow.dart`, `vrchat_files.dart` | Finding VRChat, reading its parameter tree, and the saved-config fallback |
+| `lib/vrchat_controls.dart` | The library of VRChat's built-in OSC controls (from docs.vrchat.com) |
+| `lib/osc_relay.dart` | Forwarding to other OSC apps |
+| `lib/platform_paths.dart` | Per-OS folders (config, VRChat's files under Proton) and socket options |
 | `lib/main.dart`, `*_page.dart`, `*_dialog.dart`, `param_card.dart` | UI |
+| `windows/`, `linux/`, `macos/`, `installer/` | Platform runners, packaging (`linux/packaging/package.sh` for AppImage/`.deb`/tarball, `macos/packaging/` for the `.dmg`), and the Inno Setup script |
 
 ### How receiving works
 

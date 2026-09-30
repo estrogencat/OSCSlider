@@ -53,7 +53,7 @@ class TriggerFields extends StatelessWidget {
       );
     }
     final watched = _findByName(eligibleParams, watchedParamName) ?? eligibleParams.first;
-    final isPulseCondition = watched.type == ParamType.toggle
+    final isPulseCondition = watched.isBoolLike
         ? (toggleCondition == ToggleTriggerCondition.turnsOn || toggleCondition == ToggleTriggerCondition.turnsOff)
         : (rangeCondition == RangeTriggerCondition.crossesAbove ||
             rangeCondition == RangeTriggerCondition.crossesBelow);
@@ -70,7 +70,7 @@ class TriggerFields extends StatelessWidget {
           onChanged: (v) => onWatchedParamChanged(v ?? watched.name),
         ),
         const SizedBox(height: 8),
-        if (watched.type == ParamType.toggle) ...[
+        if (watched.isBoolLike) ...[
           DropdownButtonFormField<ToggleTriggerCondition>(
             initialValue: toggleCondition,
             decoration: const InputDecoration(labelText: 'Condition'),

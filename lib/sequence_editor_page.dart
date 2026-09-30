@@ -47,10 +47,13 @@ class _SequenceEditorPageState extends State<SequenceEditorPage> {
   LiveController get live => widget.live;
   List<ParamControl> get _parameters => live.parameters;
 
-  // only sliders/toggles are settable step targets - custom-type params have
-  // no single "value" this app can drive.
-  List<ParamControl> get _eligibleParams =>
-      _parameters.where((p) => p.type == ParamType.slider || p.type == ParamType.toggle).toList();
+  // anything but raw custom-type params can be a step target - custom ones
+  // have no single "value" this app can drive.
+  List<ParamControl> get _eligibleParams => _parameters.where((p) => p.type != ParamType.custom).toList();
+
+  // triggers can watch anything with a readable value.
+  List<ParamControl> get _watchableParams =>
+      _parameters.where((p) => p.type == ParamType.slider || p.isBoolLike).toList();
 
   ParamControl? _findEligible(String name) => _eligibleParams.where((p) => p.name == name).firstOrNull;
 
@@ -100,7 +103,7 @@ class _SequenceEditorPageState extends State<SequenceEditorPage> {
   RangeTriggerCondition get _rangeCondition => seq.trigger?.rangeCondition ?? RangeTriggerCondition.above;
 
   ParamTrigger _trigger() {
-    final eligible = _eligibleParams;
+    final eligible = _watchableParams;
     final t = seq.trigger ??= ParamTrigger(watchedParamName: eligible.isEmpty ? '' : eligible.first.name);
     // a watched parameter that's since been deleted - the picker shows the
     // first eligible one, so make that what's actually stored too.
@@ -155,6 +158,7 @@ class _SequenceEditorPageState extends State<SequenceEditorPage> {
       step.targetValue = result.targetValue;
       step.targetBool = result.targetBool;
       step.durationSeconds = result.durationSeconds;
+      step.text = result.text;
     });
   }
 
@@ -198,6 +202,13 @@ class _SequenceEditorPageState extends State<SequenceEditorPage> {
     final label = param?.label ?? step.paramName;
     if (param?.type == ParamType.toggle) {
       return 'Set "$label" ${step.targetBool ? 'on' : 'off'}, hold ${_fmt(step.durationSeconds)}s';
+    }
+    if (param?.type == ParamType.button) {
+      return 'Press "$label" for ${_fmt(step.durationSeconds < 0.05 ? 0.05 : step.durationSeconds)}s';
+    }
+    if (param?.type == ParamType.chatbox) {
+      final preview = step.text.length > 40 ? '${step.text.substring(0, 40)}…' : step.text;
+      return 'Say "$preview", then wait ${_fmt(step.durationSeconds)}s';
     }
     if (step.durationSeconds <= 0) return 'Set "$label" to ${_fmt(step.targetValue)}';
     return 'Glide "$label" to ${_fmt(step.targetValue)} over ${_fmt(step.durationSeconds)}s';
@@ -284,7 +295,7 @@ class _SequenceEditorPageState extends State<SequenceEditorPage> {
       items: [
         const PopupMenuItem(value: 'edit', child: Text('Edit')),
         if (param.type != ParamType.custom) const PopupMenuItem(value: 'step', child: Text('Add a step for this')),
-        if (param.type != ParamType.custom) const PopupMenuItem(value: 'fetch', child: Text('Fetch value from VRChat')),
+        if (param.isAutomatable) const PopupMenuItem(value: 'fetch', child: Text('Fetch value from VRChat')),
         const PopupMenuItem(value: 'delete', child: Text('Delete from profile')),
       ],
     );
@@ -421,7 +432,7 @@ class _SequenceEditorPageState extends State<SequenceEditorPage> {
                   param: p,
                   live: live,
                   dense: true,
-                  automationButton: p.type == ParamType.custom ? null : _automationButton(p),
+                  automationButton: p.isAutomatable ? _automationButton(p) : null,
                   onMenu: (pos) => _showParamMenu(pos, p),
                 ),
               ),
@@ -521,7 +532,7 @@ class _SequenceEditorPageState extends State<SequenceEditorPage> {
                       ),
                       if (_triggerEnabled) ...[
                         TriggerFields(
-                          eligibleParams: _eligibleParams,
+                          eligibleParams: _watchableParams,
                           watchedParamName: _watchedParamName,
                           toggleCondition: _toggleCondition,
                           rangeCondition: _rangeCondition,
@@ -685,6 +696,7 @@ class _StepDialogState extends State<_StepDialog> {
   late final TextEditingController _targetValue;
   late bool _targetBool;
   late final TextEditingController _duration;
+  late final TextEditingController _text;
   String? _error;
 
   ParamControl? get _param => widget.eligibleParams.where((p) => p.name == _paramName).firstOrNull;
@@ -702,6 +714,7 @@ class _StepDialogState extends State<_StepDialog> {
     _targetValue = TextEditingController(text: _fmt(e?.targetValue ?? _param?.max ?? 1.0));
     _targetBool = e?.targetBool ?? true;
     _duration = TextEditingController(text: _fmt(e?.durationSeconds ?? 1.0));
+    _text = TextEditingController(text: e?.text ?? '');
   }
 
   String _fmt(double v) => v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toString();
@@ -710,6 +723,7 @@ class _StepDialogState extends State<_StepDialog> {
   void dispose() {
     _targetValue.dispose();
     _duration.dispose();
+    _text.dispose();
     super.dispose();
   }
 
@@ -726,6 +740,8 @@ class _StepDialogState extends State<_StepDialog> {
         param!.type == ParamType.slider &&
         target == null) {
       error = 'Target value must be a number';
+    } else if (_kind == SequenceStepKind.setValue && param!.type == ParamType.chatbox && _text.text.trim().isEmpty) {
+      error = 'Enter a message';
     }
     if (error != null) {
       setState(() => _error = error);
@@ -737,6 +753,7 @@ class _StepDialogState extends State<_StepDialog> {
       targetValue: target ?? param?.max ?? 1.0,
       targetBool: _targetBool,
       durationSeconds: duration!,
+      text: param?.type == ParamType.chatbox ? _text.text : '',
     ));
   }
 
@@ -778,7 +795,15 @@ class _StepDialogState extends State<_StepDialog> {
                 onChanged: (v) => setState(() => _paramName = v ?? _paramName),
               ),
               const SizedBox(height: 8),
-              if (param?.type == ParamType.toggle)
+              if (param?.type == ParamType.button)
+                const SizedBox.shrink()
+              else if (param?.type == ParamType.chatbox)
+                TextField(
+                  controller: _text,
+                  maxLength: 144,
+                  decoration: const InputDecoration(labelText: 'Message'),
+                )
+              else if (param?.type == ParamType.toggle)
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
                   title: const Text('Set to'),
@@ -800,10 +825,18 @@ class _StepDialogState extends State<_StepDialog> {
                 controller: _duration,
                 keyboardType: const TextInputType.numberWithOptions(decimal: true),
                 decoration: InputDecoration(
-                  labelText: param?.type == ParamType.toggle ? 'Hold for (seconds)' : 'Glide over (seconds)',
-                  helperText: param?.type == ParamType.toggle
-                      ? 'Toggles snap instantly, then this step holds before advancing'
-                      : '0 = snap instantly (and run the next step right away)',
+                  labelText: switch (param?.type) {
+                    ParamType.toggle => 'Hold for (seconds)',
+                    ParamType.button => 'Press for (seconds)',
+                    ParamType.chatbox => 'Then wait (seconds)',
+                    _ => 'Glide over (seconds)',
+                  },
+                  helperText: switch (param?.type) {
+                    ParamType.toggle => 'Toggles snap instantly, then this step holds before advancing',
+                    ParamType.button => 'Held down this long, then released (0 = a quick tap)',
+                    ParamType.chatbox => 'VRChat rate-limits the chatbox, so leave a little time between messages',
+                    _ => '0 = snap instantly (and run the next step right away)',
+                  },
                 ),
               ),
             ] else ...[

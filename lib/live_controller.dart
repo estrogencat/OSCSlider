@@ -51,12 +51,19 @@ class LiveController extends ChangeNotifier {
 
   StreamSubscription<OscMessage>? _inputSub;
   bool _inputAcquired = false;
+  bool _disposed = false;
+  bool _pulling = false;
+  String? _knownVrchat;
+  bool _wasAutoMode = false;
+  bool _wasSyncing = false;
+  Timer? _pullAfterChange;
 
   /// transient messages for the user (e.g. auto mode switching profile).
   void Function(String message)? onNotice;
 
   LiveController(this.config) : _osc = OscClient(host: config.host, port: config.port) {
     _inputSub = oscInputHub.messages.listen(_onOscMessage);
+    oscInputHub.status.addListener(_onLinkStatus);
     reconcile();
     _timer = Timer.periodic(const Duration(milliseconds: 33), (_) => tick());
   }
@@ -70,6 +77,12 @@ class LiveController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
+    oscInputHub.status.removeListener(_onLinkStatus);
+    _pullAfterChange?.cancel();
+    for (final t in _tapTimers.values) {
+      t.cancel();
+    }
     _timer?.cancel();
     _persistTimer?.cancel();
     _inputSub?.cancel();
@@ -159,8 +172,80 @@ class LiveController extends ChangeNotifier {
   void setToggle(ParamControl param, bool value) {
     recordInteraction(param);
     values[param.name] = value;
-    _osc.sendBool(oscAddressFor(param), value);
+    _sendBool(param, value);
     notifyListeners();
+  }
+
+  /// toggles send true/false; buttons send 1/0 or true/false depending on
+  /// what the target expects (VRChat's /input buttons want ints).
+  void _sendBool(ParamControl param, bool value) {
+    final address = oscAddressFor(param);
+    if (param.type == ParamType.button && param.buttonSendsInt) {
+      _osc.sendInt(address, value ? 1 : 0);
+    } else {
+      _osc.sendBool(address, value);
+    }
+  }
+
+  final Map<String, Timer> _tapTimers = {};
+
+  /// a button going down (true) or up (false) - hold-mode buttons follow
+  /// the pointer, so "while held" means exactly that.
+  void pressButton(ParamControl param, bool down) {
+    if (toggleValue(param) == down) return;
+    _tapTimers.remove(param.name)?.cancel();
+    setToggle(param, down);
+  }
+
+  /// a press-and-release pulse, e.g. a Jump. VRChat ignores a second "1"
+  /// without a "0" in between, so the release always follows.
+  void tapButton(ParamControl param) {
+    _tapTimers.remove(param.name)?.cancel();
+    if (toggleValue(param)) setToggle(param, false);
+    setToggle(param, true);
+    _tapTimers[param.name] = Timer(Duration(milliseconds: param.tapMillis), () {
+      _tapTimers.remove(param.name);
+      if (!_disposed) setToggle(param, false);
+    });
+  }
+
+  /// a slider was let go - spring-back sliders (VRChat's /input axes)
+  /// return to their rest value so they don't keep you moving forever.
+  void releaseSlider(ParamControl param) {
+    if (param.springBack) setSlider(param, param.defaultValue);
+  }
+
+  /// sends a chatbox param's message (its text box, or [text]). returns
+  /// false if there was nothing to send.
+  Future<bool> sendChatbox(ParamControl param, {String? text}) async {
+    final controller = customText[param.name];
+    final message = text ?? controller?.text ?? param.customValueText;
+    if (message.trim().isEmpty) return false;
+    recordInteraction(param);
+    await _osc.sendChatbox(
+      oscAddressFor(param),
+      message,
+      sendNow: param.chatboxSendImmediately,
+      notify: param.chatboxNotify,
+    );
+    if (text == null && param.chatboxSendImmediately) {
+      controller?.clear();
+      param.customValueText = '';
+    }
+    _typing[param.name] = false;
+    return true;
+  }
+
+  final Map<String, bool> _typing = {};
+
+  /// shows/hides VRChat's "typing..." bubble while a chatbox has a draft.
+  void chatboxTyping(ParamControl param, bool typing) {
+    if (!param.chatboxTypingIndicator || _typing[param.name] == typing) return;
+    _typing[param.name] = typing;
+    final address = oscAddressFor(param);
+    final typingAddress =
+        address.endsWith('/input') ? '${address.substring(0, address.length - 6)}/typing' : '/chatbox/typing';
+    _osc.sendBool(typingAddress, typing);
   }
 
   /// throws with a readable message if the value can't be encoded/sent.
@@ -176,9 +261,15 @@ class LiveController extends ChangeNotifier {
       case ParamType.slider:
         _sendSlider(param, sliderValue(param), force: true);
       case ParamType.toggle:
-        _osc.sendBool(oscAddressFor(param), toggleValue(param));
+        _sendBool(param, toggleValue(param));
       case ParamType.custom:
         sendCustom(param).catchError((_) {});
+      // a button's resting state is "released"; a chatbox message isn't
+      // something to repeat by accident.
+      case ParamType.button:
+        _sendBool(param, false);
+      case ParamType.chatbox:
+        break;
     }
   }
 
@@ -288,7 +379,15 @@ class LiveController extends ChangeNotifier {
       _lastSentSlider.clear();
     }
     applyThemeFromConfig(config);
-    oscInputHub.setLegacyPort(config.port + 1);
+    oscInputHub.setLegacyPort(effectiveListenPort(config));
+    oscInputHub.setRelayTargets([
+      for (final t in config.forwardTargets)
+        if (t.relaysIncoming) (t.host, t.port),
+    ]);
+    _osc.mirror.targets = [
+      for (final t in config.forwardTargets)
+        if (t.mirrorsOutgoing) (t.host, t.port),
+    ];
     _updateInputAcquire();
 
     final current = {for (final p in parameters) p.name};
@@ -298,8 +397,8 @@ class LiveController extends ChangeNotifier {
     for (final p in parameters) {
       final ok = switch (p.type) {
         ParamType.slider => values[p.name] is double && sliderText.containsKey(p.name),
-        ParamType.toggle => values[p.name] is bool,
-        ParamType.custom => customText.containsKey(p.name),
+        ParamType.toggle || ParamType.button => values[p.name] is bool,
+        ParamType.custom || ParamType.chatbox => customText.containsKey(p.name),
       };
       if (ok) {
         if (p.type == ParamType.slider) _setSliderText(p, sliderValue(p));
@@ -317,11 +416,13 @@ class LiveController extends ChangeNotifier {
     switch (p.type) {
       case ParamType.toggle:
         values[p.name] = p.defaultBool;
+      case ParamType.button:
+        values[p.name] = false;
       case ParamType.slider:
         final v = p.defaultValue.isFinite ? p.defaultValue : 0.0;
         values[p.name] = v;
         sliderText[p.name] ??= TextEditingController(text: formatParamValue(p, v, advancedMode));
-      case ParamType.custom:
+      case ParamType.custom || ParamType.chatbox:
         customText[p.name] ??= TextEditingController(text: p.customValueText);
     }
   }
@@ -349,6 +450,16 @@ class LiveController extends ChangeNotifier {
     // sync is happy with whatever arrives via OSCQuery, and holding the
     // fixed port just in case would block other OSC apps from it.
     final want = config.autoProfileMode;
+    // /avatar/change only fires on a CHANGE - switching auto mode (or live
+    // sync) on while already wearing an avatar has to ask for the current
+    // one instead of waiting for the next swap.
+    final autoTurnedOn = want && !_wasAutoMode;
+    final syncTurnedOn = config.syncFromVrchat && !_wasSyncing;
+    _wasAutoMode = want;
+    _wasSyncing = config.syncFromVrchat;
+    if (autoTurnedOn || syncTurnedOn) {
+      scheduleMicrotask(() => pullFromVrchat(avatar: autoTurnedOn, values: syncTurnedOn));
+    }
     if (want && !_inputAcquired) {
       _inputAcquired = true;
       oscInputHub.acquire();
@@ -402,10 +513,64 @@ class LiveController extends ChangeNotifier {
 
   // --- incoming OSC ---
 
+  /// catches up with what VRChat is doing right now - the current avatar
+  /// (for auto mode) and every parameter's value (for live sync). only runs
+  /// once VRChat is actually known, so it never kicks off a slow search.
+  Future<void> pullFromVrchat({bool avatar = true, bool values = true}) async {
+    if (_pulling || _disposed) return;
+    avatar = avatar && config.autoProfileMode;
+    values = values && config.syncFromVrchat;
+    if (!avatar && !values) return;
+    // the hub may already have heard an /avatar/change while auto mode was off.
+    final heard = oscInputHub.lastAvatarId;
+    if (avatar && heard != null) {
+      await _onAvatarChanged(heard);
+      avatar = false;
+      if (!values) return;
+    }
+    if (oscInputHub.status.value.vrchat == null) return;
+    _pulling = true;
+    try {
+      final timeout = Duration(seconds: config.oscQueryFetchTimeoutSeconds);
+      final lookup = await OscQueryClient.findVrchat(anyOscQueryService: config.developerMode, timeout: timeout);
+      final endpoint = lookup.endpoint;
+      if (endpoint == null || _disposed) return;
+      if (avatar && config.autoProfileMode) {
+        final id = await OscQueryClient.fetchAvatarId(endpoint);
+        if (id != null && !_disposed) {
+          oscInputHub.lastAvatarId = id;
+          await _onAvatarChanged(id);
+        }
+      }
+      if (values && config.syncFromVrchat && !_disposed) {
+        final found = await OscQueryClient.fetchAvatarParameters(endpoint, maxAttempts: 1, perAttemptTimeout: timeout);
+        if (!_disposed) applyReportedValues(found);
+      }
+    } catch (_) {
+      // best effort - live changes still arrive as they happen.
+    } finally {
+      _pulling = false;
+    }
+  }
+
+  void _onLinkStatus() {
+    final peer = oscInputHub.status.value.vrchat;
+    final key = peer == null ? null : '${peer.host}:${peer.port}';
+    if (key == _knownVrchat) return;
+    _knownVrchat = key;
+    // VRChat just showed up (app started after it, or it restarted).
+    if (key != null) pullFromVrchat();
+  }
+
   void _onOscMessage(OscMessage msg) {
     if (msg.address == '/avatar/change') {
-      if (config.autoProfileMode && msg.args.isNotEmpty && msg.args.first is String) {
-        _onAvatarChanged(msg.args.first as String);
+      if (msg.args.isEmpty || msg.args.first is! String) return;
+      if (config.autoProfileMode) _onAvatarChanged(msg.args.first as String);
+      // a freshly loaded avatar starts from its own defaults - re-read
+      // them once it's had a moment to load.
+      if (config.syncFromVrchat) {
+        _pullAfterChange?.cancel();
+        _pullAfterChange = Timer(const Duration(seconds: 2), () => pullFromVrchat(avatar: false));
       }
       return;
     }
@@ -422,7 +587,7 @@ class LiveController extends ChangeNotifier {
 
   bool _applyIncoming(ParamControl param, Object raw) {
     switch (param.type) {
-      case ParamType.toggle:
+      case ParamType.toggle || ParamType.button:
         final v = raw is bool ? raw : (raw is num ? raw != 0 : null);
         if (v == null || values[param.name] == v) return false;
         values[param.name] = v;
@@ -436,22 +601,24 @@ class LiveController extends ChangeNotifier {
         _lastSentSlider.remove(param.name);
         _setSliderText(param, v);
         return true;
-      case ParamType.custom:
+      case ParamType.custom || ParamType.chatbox:
         return false;
     }
   }
 
   Future<void> _onAvatarChanged(String avatarId) async {
-    if (config.activeProfile.avatarId == avatarId) return;
+    if (_disposed || !config.autoProfileMode || config.activeProfile.avatarId == avatarId) return;
     // snapshot profiles are static saves, never candidates for auto mode's
     // avatar-based matching/creation.
     final match = config.profiles.where((p) => !p.isSnapshot && p.avatarId == avatarId).firstOrNull;
     if (match != null) {
       switchProfile(match.id);
     } else {
+      // "switch only" auto mode leaves unknown avatars on whatever's active.
+      if (!config.autoProfileCreate) return;
       final name = await _avatarProfileName(avatarId);
       // another change may have landed while the name lookup ran.
-      if (config.profiles.any((p) => !p.isSnapshot && p.avatarId == avatarId)) return;
+      if (_disposed || config.profiles.any((p) => !p.isSnapshot && p.avatarId == avatarId)) return;
       final profile = Profile(id: newId(), name: name, avatarId: avatarId);
       config.profiles.add(profile);
       switchProfile(profile.id);
@@ -513,8 +680,12 @@ class LiveController extends ChangeNotifier {
     void onToggle(ParamControl param, bool value) {
       _engineTouched[param.name] = now;
       values[param.name] = value;
-      _osc.sendBool(oscAddressFor(param), value);
+      _sendBool(param, value);
       changed = true;
+    }
+
+    void onText(ParamControl param, String text) {
+      sendChatbox(param, text: text).catchError((_) => false);
     }
 
     // triggers go first, so whatever they switch on/off this tick is what
@@ -550,7 +721,7 @@ class LiveController extends ChangeNotifier {
 
     automationEngine.tick(targets, onSlider, onToggle);
     scheduleEngine.tick(params, lastInteraction, values, onSlider, onToggle);
-    sequenceEngine.tick(seqs, params, values, onSlider, onToggle);
+    sequenceEngine.tick(seqs, params, values, onSlider, onToggle, onText: onText);
 
     final flagsChanged = flags() != wasEnabled;
     if (flagsChanged) _persistSoon();

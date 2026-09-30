@@ -8,6 +8,7 @@ import 'package:flutter/foundation.dart';
 
 import 'crash_log.dart';
 import 'mdns_codec.dart';
+import 'platform_paths.dart';
 
 const oscJsonServiceType = '_oscjson._tcp.local';
 const oscUdpServiceType = '_osc._udp.local';
@@ -125,13 +126,13 @@ class OscQueryService {
   }
 
   Future<void> _startMdns() async {
-    // shared with every other mDNS user on this machine (VRChat included) -
-    // reusePort isn't supported on Windows, reuseAddress is what lets it share.
+    // shared with every other mDNS user on this machine (VRChat, avahi,
+    // mDNSResponder) - see PlatformPaths.canReusePort.
     final socket = await RawDatagramSocket.bind(
       InternetAddress.anyIPv4,
       mdnsPort,
       reuseAddress: true,
-      reusePort: false,
+      reusePort: PlatformPaths.canReusePort,
       ttl: 255,
     );
     socket.multicastLoopback = true;

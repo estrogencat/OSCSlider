@@ -8,9 +8,10 @@ import 'package:multicast_dns/multicast_dns.dart';
 import 'osc_input_hub.dart';
 import 'oscquery_service.dart';
 import 'param_control.dart';
+import 'platform_paths.dart';
 
 // dart:io on Windows doesn't support SO_REUSEPORT, but multicast_dns always
-// requests reusePort: true. Override the socket factory to drop that flag.
+// requests reusePort: true - drop it there, keep it where it's needed.
 Future<RawDatagramSocket> _bindWithoutReusePort(
   dynamic host,
   int port, {
@@ -22,7 +23,7 @@ Future<RawDatagramSocket> _bindWithoutReusePort(
     host,
     port,
     reuseAddress: reuseAddress,
-    reusePort: false,
+    reusePort: reusePort && PlatformPaths.canReusePort,
     ttl: ttl,
   );
 }
