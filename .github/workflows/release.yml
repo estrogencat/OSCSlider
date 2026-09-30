@@ -126,7 +126,7 @@ jobs:
             -D app="$app" -D background="$PWD/dmg-background.tiff" \
             "OSCSlider" dist/OSCSlider-macos.dmg
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: OSCSlider-${{ matrix.platform }}
           path: dist/*
