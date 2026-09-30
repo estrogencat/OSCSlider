@@ -131,6 +131,8 @@ jobs:
           name: OSCSlider-${{ matrix.platform }}
           path: dist/*
           if-no-files-found: error
+          # only needed until the release job attaches them (1 is the minimum).
+          retention-days: 1
 
   release:
     name: Publish release
