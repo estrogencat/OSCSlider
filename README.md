@@ -1,91 +1,174 @@
+<div align="center">
+
 # OSCSlider
 
-A Windows desktop app for controlling VRChat avatar parameters over OSC - sliders, toggles, and custom values, with live discovery of your current avatar's parameters via OSCQuery.
+**A control panel for your VRChat avatar's parameters over OSC.**
+Sliders, toggles, automations and sequences, with your avatar's parameters discovered for you.
+
+[![Latest release](https://img.shields.io/github/v/release/estrogencat/OSCSlider?label=download)](../../releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/estrogencat/OSCSlider/total)](../../releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+![Windows](https://img.shields.io/badge/platform-Windows-0078D4)
+
+</div>
+
 > [!NOTE]
 > Sonnet 5 Ultracode was used to assist in making this, mostly the compiling stuff and ironing out a bunch of bugs I couldn't wrap my head around.
 
+## Getting started
+
+1. Grab **`OSCSlider-Setup.exe`** from the [latest release](../../releases/latest), or the portable `.zip` if you'd rather not install anything.
+2. In VRChat, turn on OSC: **Action Menu → Options → OSC → Enabled**.
+3. Open OSCSlider and hit **Discover** (the wifi-search icon in the title bar) to pull in your current avatar's parameters.
+
+The chip in the title bar turns green once VRChat is found.
+
+> [!TIP]
+> OSCSlider works alongside face tracking, VRCOSC and other OSC apps. It gets VRChat's output through its own OSCQuery service instead of fighting over port 9001.
+
 ## Features
 
-- Sliders (float/int) and toggles for `/avatar/parameters/*`, plus a custom type covering the full OSC 1.0/1.1 type set (int64, double, symbol, char, RGBA color, MIDI message, blob, time tag, nil/infinitum) for anything VRChat itself doesn't use but other OSC software might - manually-added parameters can also target a full OSC address outside `/avatar/parameters/` by typing a leading `/`
-- Auto-discovery of the current avatar's parameters via VRChat's OSCQuery service - typed (toggle / int / float, with ints set up as 0-255 sliders), showing each one's current value, with search, "Add all", a manual "add a custom parameter path" option, and a "Fetch value" option that pulls a single parameter's current live value from the avatar into the app. VRChat's read-only built-ins (Grounded, AFK, Velocity...) are hidden behind a chip by default - they can't be set, but can still be added to use as trigger sources
-  - If VRChat's OSCQuery server hangs (it does on some complex avatars), discovery falls back to the avatar's saved OSC config that VRChat keeps in `LocalLow\VRChat\VRChat\OSC`, so you still get the full list
-  - **Highlight active parameters**: surfaces parameters as they actually change in VRChat - wiggle a physbone or trigger a contact and its parameter jumps to the top (and gets added to the list if it wasn't there). A noise filter keeps constantly-firing parameters (Voice, Velocity...) and anything that keeps recurring on its own cycle from hogging the top spot, without also swallowing a real physbone wiggle - its rate threshold (changes/sec) is adjustable in Settings > Miscellaneous
-- **Plays nicely with other OSC apps**: the app runs its own OSCQuery service (the same thing VRCFaceTracking, VRCOSC etc. do), so VRChat sends its output to a port only this app uses. Nothing has to bind the shared 9001 port anymore, so face tracking and other tools keep working alongside it. The classic port is only used as a fallback for non-OSCQuery software, is never shared/stolen from another app, and is released as soon as VRChat is found
-- **Sync values from VRChat** (on by default): changes made in-game - radial menu, contacts, physbones - show up on the dashboard live, and triggers can react to them. "Pull current values from VRChat" in the ⋮ menu grabs everything at once
-- A live connection chip in the title bar: whether VRChat is found, whether its output is arriving, send errors (e.g. an unresolvable host), and a warning with a one-click fix if VRChat is listening on a different port than you're sending to. Errors show the *exact* underlying message in a copyable dialog instead of a generic "not found"
-- A responsive grid (more columns on a wide window), collapsible categories, drag-to-reorder in Settings, and a ⋮ / right-click menu on every parameter (edit, automation, fetch, resend, delete). Int sliders snap to whole numbers
-- Profiles - a separate parameter set per avatar, with an opt-in auto mode that switches profiles when VRChat reports an avatar change (named after the avatar). Profiles can be duplicated, and exported/imported as JSON via the clipboard for sharing
-  - **Save Parameters / Snapshots**: freeze the currently active profile's live values into a static, named save that's never auto-switched to and never touched by avatar changes. Apply pushes a snapshot's saved values onto whatever profile is active now, adding any parameters it's missing; snapshots get their own editor for renaming, editing membership, and re-fetching individual saved values
-- A Material You theme picker (preset colors or a custom HSV wheel, with full per-role overrides in advanced mode)
-- **Automations** - give any slider or toggle its own animation:
-  - **Ramp**: glides between two values, with once/loop/ping-pong repeat, a repeat count, a per-repeat speed change (each cycle faster or slower than the last), and a choice of easing - linear, ease in/out, sine, or a hand-drawn custom curve (with optional spline smoothing and its own editable graph range)
-  - **Random**: picks a new value (or flips a toggle) on a randomized interval, with optional smooth drift between values
-  - **Blink**: cycles a toggle on/off on a fixed schedule
-  - Ramp/random/blink timing fields have no artificial minimum - set a duration as small as you want (the engine itself still guards against a literal zero causing a divide-by-zero)
-  - Optionally **triggered by another parameter** instead of (or alongside) the manual switch: watch a toggle (turns on/off, or while on/off) or a slider (above/below/crosses a threshold, or inside/outside a range) to start it automatically - the "fires once" conditions (turns on/off, crosses above/below) can also require a configurable number of activations before actually firing, not just the first one
-  - **Schedules** are folded into the same editor as just another automation "Type": fire at a specific time of day, on a repeating interval, after the app's been idle for a while, or once after a countdown - optionally auto-reverting after N seconds for a "pulse" instead of a permanent change
-- **Sequences** - script several parameters to change one after another (a little visual program: set a value, wait, set another value...), with once or looping playback, and the same parameter-trigger option as automations (including the activation-count requirement above). Instant (0s) steps run together in the same moment, and the editor highlights the step that's currently running
-  - A sequence can also give any of its parameters their **own automation** that runs only while the sequence itself is running - fully separate from that parameter's regular (global) automation, with its own enable/resume switch (so it can be paused within the sequence without losing its settings) and an optional start delay to stagger several automations in the same sequence instead of starting them all in lockstep. The main screen surfaces when a parameter is actually being driven by a sequence this way (with a management popup to pause, open the sequence, or unlink it), and the app automatically keeps a parameter's global automation, a sequence's per-parameter automation, and a sequence's own step script from ever fighting each other over the same value if more than one happens to target it at once
-- **Hidden features** - a "Features that are disabled by default" button in Settings (next to Theme Color) unlocks opt-in extras. Currently: the **Automation Master Switch**, which adds a switch (in Settings, and next to the main search bar) to bulk enable/disable a chosen set of automations (or all of them) at once, as a one-time action rather than a persistent override - it automatically excludes anything currently driven by a sequence or continuously held by a "while on/off"-style trigger, since bulk-toggling either would just get overridden right back
-- **Developer Mode** - hidden until you tap the version number in Settings 5 times (tap it 5 more times while it's visible to hide it again). Adds full-precision slider values, a configurable OSCQuery timeout, and lets parameter discovery/fetching find any OSCQuery-advertising program instead of requiring one that identifies as VRChat, for testing against other OSC tools
-- **Safe config**: saves are atomic (a crash mid-save can't corrupt config.json), and if config.json ever fails to load you get options to restore the last working copy or start fresh - the broken file is always kept
-- **Miscellaneous** settings - currently just the highlight-active-parameters noise filter's threshold (see above)
+### Controls
+- **Sliders** (float or int) and **toggles** for any avatar parameter. Int sliders snap to whole numbers.
+- **Custom** parameters for any OSC type (int64, double, string, color, MIDI, blob, time tag...) and any address. Start a name with `/` to send somewhere other than `/avatar/parameters/`.
+- **Live sync** from VRChat. Changes made in-game (radial menu, contacts, physbones) show up on the dashboard as they happen.
+- A grid that uses the space on a wide window, collapsible categories, and a <kbd>⋮</kbd> / right-click menu on every parameter.
 
-## Getting the app
+### Discovery
+- Lists your current avatar's parameters **with their types and current values**. Add one at a time or all at once.
+- **Highlight active**: move something in-game and its parameter jumps to the top of the list. A noise filter keeps always-changing parameters (Voice, Velocity...) from hogging the top.
+- VRChat's read-only built-ins (`Grounded`, `AFK`...) are hidden by default. They can't be set, but you can still add them to use as triggers.
+- If VRChat's OSCQuery server hangs (it does on some heavy avatars), discovery falls back to the avatar config VRChat saves on disk.
 
-Grab the latest installer from [Releases](../../releases) - `OSCSlider-Setup.exe`. It installs to `Program Files` and stores its config in `%APPDATA%\OSCSlider\config.json`. There's also a portable `.zip` if you'd rather not install anything.
+### Automations
+Give any slider or toggle a life of its own:
 
-This is a single x64 build - it also runs great on ARM64 Windows (Surface-style devices) through Windows' built-in x64 emulation, since Flutter doesn't currently offer a native ARM64 Windows toolchain to build a separate binary from.
+| Type | What it does |
+| --- | --- |
+| **Ramp** | Glides between two values. Once, loop or ping-pong, with a repeat count, per-repeat speed change, and linear / ease / sine / hand-drawn easing curves |
+| **Random** | Picks a new value (or flips a toggle) at random intervals, optionally drifting smoothly |
+| **Blink** | Cycles a toggle on and off |
+| **Schedule** | Fires at a time of day, every N seconds, after you've been idle, or once after a countdown. Can auto-revert for a pulse |
+
+Any automation can be **triggered by another parameter**: when a toggle turns on or off, while it's on, when a slider crosses a threshold, and more. It can also fire only every N activations.
+
+### Sequences
+Script changes across several parameters: *set a value, wait, glide another, loop*. Sequences can be triggered like automations, and can run their own per-parameter automations that only live while the sequence runs. The app keeps sequences and automations from fighting over the same parameter.
+
+### Profiles & snapshots
+- A separate parameter set per avatar. **Auto mode** switches (or creates) profiles when you change avatar, named after the avatar.
+- Duplicate profiles, or share them as JSON via the clipboard.
+- **Snapshots** freeze the current values under a name so you can apply them again later.
+
+### Everything else
+- A Material You theme picker, with presets or a custom colour wheel.
+- A connection chip that shows whether VRChat is found, whether data is arriving, and any send errors. It also offers a one-click fix if VRChat is listening on a different port than you're sending to.
+- Crash-safe config: saves can't corrupt `config.json`, and a broken one can be restored from the last good copy.
+- Opt-in extras under *Settings → Features that are disabled by default*, such as the **Automation Master Switch** for bulk enabling/disabling automations.
 
 <details>
-<summary><strong>Technical details</strong> (building from source, project layout, protocol notes)</summary>
+<summary><strong>Developer Mode</strong></summary>
 
-### Building from source
+Tap the version number at the bottom of Settings 5 times to unlock it, and 5 more times to hide it again. It adds full-precision slider values, a configurable OSCQuery timeout, and discovery from *any* OSCQuery service instead of only VRChat, which is handy for testing other OSC tools.
 
-Requires the Flutter SDK with Windows desktop support enabled.
+</details>
+
+## FAQ
+
+<details>
+<summary><strong>The chip says "Not detected"</strong></summary>
+
+- Make sure OSC is enabled in VRChat (Action Menu → Options → OSC).
+- Windows may ask whether to allow OSCSlider on your network the first time it runs. It needs that to find VRChat, so allow it.
+- VRChat only sends parameter changes when something changes, so the chip can say "found" before anything is received.
+
+</details>
+
+<details>
+<summary><strong>My sliders don't do anything in-game</strong></summary>
+
+- Check the chip for a send error, or a port-mismatch warning if you launched VRChat with a custom `--osc` port.
+- Parameters marked **read-only** (VRChat's built-ins) can't be set by any OSC app.
+- Parameter names are case-sensitive, and nested names like `Folder/Param` are part of the address.
+
+</details>
+
+<details>
+<summary><strong>Can I use it with VRChat on Quest?</strong></summary>
+
+Set **Send to host** in Settings to your Quest's IP address. Sending works, but receiving VRChat's output on a standalone Quest relies on the classic port 9001 fallback rather than OSCQuery.
+
+</details>
+
+<details>
+<summary><strong>Where are my settings stored?</strong></summary>
+
+In `%APPDATA%\OSCSlider\`: `config.json`, a `config.json.bak` from the last launch where the config loaded fine, and `crash.log` if anything went wrong. *⋮ → Open config folder* takes you there.
+
+</details>
+
+<details>
+<summary><strong>Does it run on ARM64 Windows?</strong></summary>
+
+Yes. The x64 build runs through Windows' built-in emulation. Flutter doesn't offer a native ARM64 Windows toolchain yet, so there's no separate build.
+
+</details>
+
+## Building from source
+
+<details>
+<summary>Build, installer, project layout and protocol notes</summary>
+
+### Build
+
+Requires the Flutter SDK with Windows desktop support.
 
 ```bash
 flutter pub get
-flutter build windows --release
+flutter build windows --release   # output: build/windows/x64/runner/Release/
+flutter test                      # optional
 ```
 
-The build output is at `build/windows/x64/runner/Release/`.
+### Installer
 
-### Building the installer
-
-Requires [Inno Setup 6](https://jrsoftware.org/isinfo.php). Build the release binary first (above), then compile `installer/oscslider.iss` from the repo root:
+Requires [Inno Setup 6](https://jrsoftware.org/isinfo.php). Build the release binary first, then from the repo root:
 
 ```powershell
 & "C:\Users\<you>\AppData\Local\Programs\Inno Setup 6\ISCC.exe" /DAppVersion=1.0.0 installer\oscslider.iss
 ```
 
-Run this via PowerShell, not Git Bash/`cmd` - Bash's POSIX-path translation mangles the leading `/D` on the version define and Inno Setup fails with a confusing "you may not specify more than one script filename" error. The finished installer lands at `installer/Output/OSCSlider-Setup.exe`.
+> [!IMPORTANT]
+> Run that from PowerShell, not Git Bash or `cmd`. Bash's path translation mangles the `/D` define, and Inno Setup fails with a confusing "you may not specify more than one script filename" error.
+
+The installer lands in `installer/Output/`. Pushing a `v*` tag builds both the installer and the portable zip and attaches them to a GitHub release automatically.
 
 ### Project layout
 
-- `lib/param_control.dart` - the data model: parameters, profiles (including static "Save Parameters" snapshots), automations, schedules, sequences (including their own per-parameter automation overrides), parameter triggers, and `AppConfig` itself, plus their JSON (de)serialization
-- `lib/main.dart` - the main screen
-- `lib/live_controller.dart` - the live state shared by every screen (current values, text fields, the OSC client) and the single `Timer.periodic` tick loop that drives every engine; also applies values VRChat reports back and handles Auto Profile Mode
-- `lib/automation_engine.dart`, `lib/schedule_engine.dart`, `lib/sequence_engine.dart`, `lib/trigger_engine.dart` - one engine per feature, each computing its next state from elapsed wall-clock time (not stepped incrementally) so they're not sensitive to the exact tick rate; `trigger_engine.dart` evaluates parameter triggers (including the required-activation-count for "fires once" conditions) and flips `enabled` on the automations/sequences they cover before the other engines tick. The tick loop also resolves conflicts up front each tick - a sequence actively driving a parameter always wins over that parameter's own global automation, and a sequence's own step script always wins over that same sequence's per-parameter automation override for the same parameter - so at most one source ever actually drives a given parameter's value
-- `lib/osc_client.dart` / `lib/osc_listener.dart` - a minimal hand-rolled OSC 1.0 UDP encoder/decoder (no dependency pulls in the full spec), UTF-8 addresses, bundles on the receive side
-- `lib/oscquery_service.dart` / `lib/mdns_codec.dart` - this app's own OSCQuery service: a loopback HTTP server (HOST_INFO + an `/avatar` tree), a loopback UDP port for VRChat's output, and a small mDNS responder that advertises both and passively notes other OSCQuery services (VRChat's included)
-- `lib/osc_input_hub.dart` - every incoming OSC message in one stream, from the OSCQuery port (or the classic fixed port as a fallback), plus the connection status shown in the title bar
-- `lib/live_param_listener.dart` - the discover popup's "highlight active parameters" listener and its noise-filtering tracker (a rate-based changes/sec threshold plus a total-promotions cap, so both continuously-firing and slowly-recurring parameters eventually stop monopolizing the top of the list)
-- `lib/oscquery_client.dart` - finds a running VRChat (or, in Developer Mode, any) instance - last known endpoint first, then services the app already heard about, then a fresh mDNS search, each confirmed over HTTP - reads its current avatar's parameter tree, and fetches single live values on demand
-- `lib/discovery_flow.dart` / `lib/vrchat_files.dart` - the shared Discover pipeline (OSCQuery tree, falling back to VRChat's saved per-avatar OSC config file) and the reader for those files
-- `lib/param_card.dart` / `lib/connection_status.dart` - the parameter card shared by the main screen and sequence editor, and the connection chip/dialog
-- `lib/error_dialog.dart` - shows a full, unabridged, selectable error in a dialog (used by discovery/fetch/connection-check failures) instead of a snackbar, which would clip or wrap long technical text
-- `lib/app_updater.dart` - checks GitHub's "latest release" API against the running version
-- `lib/settings_page.dart`, `lib/*_dialog.dart`, `lib/trigger_fields.dart`, `lib/sequences_page.dart`, `lib/sequence_editor_page.dart`, `lib/snapshot_editor_page.dart` - the editor UI for each feature; `trigger_fields.dart` is the watched-parameter/condition picker shared by the automation dialog and the sequence editor; `sequences_page.dart` is the sequence list hub, `sequence_editor_page.dart` is one sequence's full editor (steps, trigger, and its embedded parameter/automation panel), `snapshot_editor_page.dart` is the equivalent editor for a saved snapshot
+| Path | Purpose |
+| --- | --- |
+| `lib/param_control.dart` | The data model (parameters, profiles, automations, sequences, triggers, `AppConfig`) and its JSON |
+| `lib/live_controller.dart` | Live state shared by every screen, plus the tick loop that drives the engines, value sync and auto mode |
+| `lib/*_engine.dart` | One engine each for automations, schedules, sequences and triggers. All are based on elapsed time, so they don't depend on the tick rate |
+| `lib/osc_client.dart`, `osc_listener.dart` | Hand-rolled OSC encoder/decoder: UTF-8 addresses, bundles |
+| `lib/oscquery_service.dart`, `mdns_codec.dart` | The app's own OSCQuery service: loopback HTTP + UDP, and a small mDNS responder |
+| `lib/osc_input_hub.dart` | All incoming OSC in one stream, plus the connection status |
+| `lib/oscquery_client.dart`, `discovery_flow.dart`, `vrchat_files.dart` | Finding VRChat, reading its parameter tree, and the saved-config fallback |
+| `lib/main.dart`, `*_page.dart`, `*_dialog.dart`, `param_card.dart` | UI |
+
+### How receiving works
+
+The app advertises `_oscjson._tcp` and `_osc._udp` over mDNS and serves an OSCQuery tree containing `/avatar/change`. VRChat sees that and sends its output straight to the app's own loopback port. For OSC software without OSCQuery, the classic `port + 1` (9001) is used as a fallback. It's bound exclusively, so it never steals packets from another app, and it's released as soon as VRChat is found over OSCQuery.
 
 ### OSC coverage
 
-Automations/schedules/sequences all operate on `/avatar/parameters/<name>` as float, int, or bool - VRChat's own supported types. The "Custom" parameter type additionally covers the rest of the OSC 1.0/1.1 type tag set for talking to non-VRChat OSC software; the one thing deliberately left out is arrays (`[`/`]`), since they group multiple values into a single argument slot and don't fit this app's one-parameter-one-value model. Manually-added parameters aren't actually restricted to `/avatar/parameters/` either - a name starting with `/` is sent to that exact address instead of being treated as a suffix.
-
-Everything that reads VRChat's *outgoing* OSC (value sync, the "highlight active parameters" listener, Auto Profile Mode's `/avatar/change` watcher) gets it through the app's own OSCQuery service: it advertises `_oscjson._tcp` and `_osc._udp` over mDNS, serves a tree containing `/avatar/change`, and VRChat sends its output to the advertised loopback port. When something needs input before VRChat has been found that way (e.g. non-VRChat OSC software), the app also tries the classic `port + 1` (VRChat's default 9000-in/9001-out pairing) - bound exclusively, so it never steals packets from another app on that port, and released once OSCQuery traffic arrives.
+Automations, schedules and sequences use VRChat's own types (float, int, bool). Custom parameters cover the rest of the OSC 1.0/1.1 type tags, except arrays, which don't fit the one-parameter-one-value model.
 
 ### Config format
 
-`%APPDATA%\OSCSlider\config.json` (plus `config.json.bak`, the last copy that loaded cleanly, and `crash.log`) - one `AppConfig` with a list of `Profile`s (each with its own parameters and sequences, plus a flag marking a profile as a static snapshot instead of a regular avatar-linked one); every `ParamControl` can carry an optional `automation` and/or `schedule` block, and both `Automation` and `AutomationSequence` can carry an optional `trigger` block. An `AutomationSequence` can additionally carry a `paramAutomations` map (parameter name → `Automation`) for its own per-parameter overrides. There's no schema migration system beyond a couple of `?? default` fallbacks in the `fromJson` constructors, so old configs load forward-compatibly as fields get added.
+One `AppConfig` holding a list of `Profile`s. Each profile has parameters and sequences, and snapshots are profiles with `isSnapshot` set. Parameters can carry `automation` / `schedule` blocks, and automations and sequences can carry a `trigger`. New fields fall back to defaults when missing, so older configs keep loading.
 
 </details>
+
+## License
+
+[MIT](LICENSE)
