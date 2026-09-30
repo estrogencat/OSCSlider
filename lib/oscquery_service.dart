@@ -62,7 +62,12 @@ class OscQueryService {
   /// why advertising isn't fully working, if it isn't (shown in Settings).
   String? error;
 
-  OscQueryService({required this.onPacket});
+  /// false only listens for other services (VRChat's included) without
+  /// offering its own. a phone can't be VRChat's audience that way, since
+  /// the advertisement points at 127.0.0.1.
+  final bool advertise;
+
+  OscQueryService({required this.onPacket, this.advertise = true});
 
   int? get oscPort => _osc?.port;
   int? get httpPort => _http?.port;
@@ -82,6 +87,30 @@ class OscQueryService {
 
   Future<void> start() async {
     final problems = <String>[];
+    if (advertise) await _startListeners(problems);
+
+    try {
+      await _startMdns();
+    } catch (e) {
+      problems.add('mDNS (UDP 5353): $e');
+    }
+    error = problems.isEmpty ? null : problems.join('\n');
+    if (_stopped) {
+      await stop();
+      return;
+    }
+
+    if (_mdns != null) {
+      // RFC 6762 announces a couple of times, spaced out, so a listener that
+      // missed the first one still hears about us.
+      _announce();
+      _timers.add(Timer(const Duration(seconds: 1), _announce));
+      _timers.add(Timer(const Duration(seconds: 3), _announce));
+      queryPeers();
+    }
+  }
+
+  Future<void> _startListeners(List<String> problems) async {
     try {
       // loopback only - VRChat on this PC is the audience, and a loopback
       // bind doesn't trip a Windows Firewall prompt.
@@ -102,26 +131,6 @@ class OscQueryService {
       _http = http;
     } catch (e) {
       problems.add('HTTP server: $e');
-    }
-
-    try {
-      await _startMdns();
-    } catch (e) {
-      problems.add('mDNS (UDP 5353): $e');
-    }
-    error = problems.isEmpty ? null : problems.join('\n');
-    if (_stopped) {
-      await stop();
-      return;
-    }
-
-    if (_mdns != null) {
-      // RFC 6762 announces a couple of times, spaced out, so a listener that
-      // missed the first one still hears about us.
-      _announce();
-      _timers.add(Timer(const Duration(seconds: 1), _announce));
-      _timers.add(Timer(const Duration(seconds: 3), _announce));
-      queryPeers();
     }
   }
 

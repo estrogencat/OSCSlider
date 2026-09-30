@@ -188,4 +188,10 @@ void main() {
       await dir.delete(recursive: true);
     }
   });
+
+  test('keep screen on survives a save', () {
+    final config = AppConfig(host: '127.0.0.1', port: 9000)..keepScreenOn = true;
+    expect(AppConfig.fromJson(jsonDecode(jsonEncode(config.toJson())) as Map<String, dynamic>).keepScreenOn, true);
+    expect(AppConfig.fromJson({}).keepScreenOn, false);
+  });
 }

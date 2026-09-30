@@ -875,6 +875,9 @@ class AppConfig {
   // so it only pops up for new users (Settings can replay it).
   bool tutorialSeen;
 
+  // Android: stop the screen sleeping while the app is open.
+  bool keepScreenOn;
+
   // updates: check on launch, offer pre-releases, and a version the user
   // chose to skip (only silences the launch check).
   bool checkUpdatesOnStartup;
@@ -920,6 +923,7 @@ class AppConfig {
     this.listenPort,
     List<ForwardTarget>? forwardTargets,
     this.tutorialSeen = true,
+    this.keepScreenOn = false,
     this.checkUpdatesOnStartup = true,
     this.includePrereleaseUpdates = false,
     this.skippedUpdateVersion,
@@ -1021,6 +1025,7 @@ class AppConfig {
           .whereType<ForwardTarget>()
           .toList(),
       tutorialSeen: (json['tutorialSeen'] as bool?) ?? true,
+      keepScreenOn: (json['keepScreenOn'] as bool?) ?? false,
       checkUpdatesOnStartup: (json['checkUpdatesOnStartup'] as bool?) ?? true,
       includePrereleaseUpdates: (json['includePrereleaseUpdates'] as bool?) ?? false,
       skippedUpdateVersion: _nonEmpty(json['skippedUpdateVersion'] as String?),
@@ -1050,6 +1055,7 @@ class AppConfig {
       if (listenPort != null) 'listenPort': listenPort,
       if (forwardTargets.isNotEmpty) 'forwardTargets': forwardTargets.map((t) => t.toJson()).toList(),
       'tutorialSeen': tutorialSeen,
+      'keepScreenOn': keepScreenOn,
       'checkUpdatesOnStartup': checkUpdatesOnStartup,
       'includePrereleaseUpdates': includePrereleaseUpdates,
       if (skippedUpdateVersion != null) 'skippedUpdateVersion': skippedUpdateVersion,

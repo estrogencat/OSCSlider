@@ -5,18 +5,21 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import 'android_platform.dart';
 import 'app_updater.dart';
 import 'automation_master_switch_dialog.dart';
 import 'config_store.dart';
 import 'connection_status.dart';
 import 'custom_theme_dialog.dart';
 import 'developer_mode_dialog.dart';
+import 'egg.dart';
 import 'error_dialog.dart';
 import 'hidden_features_dialog.dart';
 import 'live_controller.dart';
 import 'osc_input_hub.dart';
 import 'param_control.dart';
 import 'param_form_dialog.dart';
+import 'platform_paths.dart';
 import 'save_parameters_dialog.dart';
 import 'snapshot_editor_page.dart';
 import 'theme_notifier.dart';
@@ -661,7 +664,9 @@ class _SettingsPageState extends State<SettingsPage> {
                 controller: _hostController,
                 decoration: InputDecoration(
                   labelText: 'Send to host',
-                  helperText: '127.0.0.1 for VRChat on this PC, or a Quest\'s IP',
+                  helperText: PlatformPaths.isMobile
+                      ? 'The IP of the PC or Quest running VRChat'
+                      : '127.0.0.1 for VRChat on this PC, or a Quest\'s IP',
                   errorText: _hostError,
                 ),
                 onSubmitted: (_) => _saveConnection(),
@@ -685,6 +690,18 @@ class _SettingsPageState extends State<SettingsPage> {
           ],
         ),
         const SizedBox(height: 8),
+        if (Platform.isAndroid)
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Keep the screen on'),
+            subtitle: const Text('Handy when using this phone as a remote. Automations pause when the screen is off.'),
+            value: config.keepScreenOn,
+            onChanged: (v) {
+              setState(() => config.keepScreenOn = v);
+              AndroidPlatform.keepScreenOn(v);
+              _persist();
+            },
+          ),
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
           title: const Text('Sync values from VRChat'),
@@ -699,9 +716,13 @@ class _SettingsPageState extends State<SettingsPage> {
           },
         ),
         Text(
-          'Receiving: this app advertises its own OSCQuery service, so VRChat sends to it directly - '
-          'no fixed port needed, and other OSC apps (face tracking, VRCOSC...) keep working alongside it.'
-          '${oscInputHub.service?.oscPort != null ? ' (listening on port ${oscInputHub.service!.oscPort})' : ''}',
+          PlatformPaths.isMobile
+              ? 'Receiving: VRChat only sends its output to apps on its own computer. To get it here, forward '
+                    'it from OSCSlider on your PC (Settings > Other OSC apps) to this phone, port '
+                    '${effectiveListenPort(config)}.'
+              : 'Receiving: this app advertises its own OSCQuery service, so VRChat sends to it directly - '
+                    'no fixed port needed, and other OSC apps (face tracking, VRCOSC...) keep working alongside it.'
+                    '${oscInputHub.service?.oscPort != null ? ' (listening on port ${oscInputHub.service!.oscPort})' : ''}',
           style: theme.textTheme.bodySmall,
         ),
         _sectionTitle(
@@ -764,7 +785,7 @@ class _SettingsPageState extends State<SettingsPage> {
             hintText: '${config.port + 1} (send port + 1)',
             helperText: 'Only used for OSC software without OSCQuery - VRChat doesn\'t need it. Change it if '
                 'you launch VRChat with a custom --osc output port.',
-            helperMaxLines: 2,
+            helperMaxLines: 4,
             errorText: _listenPortError,
           ),
           onSubmitted: _setListenPort,
@@ -950,7 +971,7 @@ class _SettingsPageState extends State<SettingsPage> {
             helperText: 'In the discover popup\'s "highlight active" mode, a parameter that keeps changing at '
                 'least this often for several seconds is treated as noise and stops jumping to the top '
                 '(0 = never filter).',
-            helperMaxLines: 3,
+            helperMaxLines: 4,
           ),
           onSubmitted: _setLiveParamNoiseThreshold,
           onTapOutside: (_) {
@@ -968,7 +989,7 @@ class _SettingsPageState extends State<SettingsPage> {
               helperText: 'How long Discover waits on VRChat\'s OSCQuery server for the full parameter '
                   'list before falling back. Some avatars make VRChat hang on this outright, so lower it '
                   'to fall back faster.',
-              helperMaxLines: 3,
+              helperMaxLines: 4,
             ),
             onSubmitted: _setOscQueryFetchTimeout,
             onTapOutside: (_) {
@@ -1017,11 +1038,12 @@ class _SettingsPageState extends State<SettingsPage> {
               icon: const Icon(Icons.school_outlined),
               label: const Text('Show the tour again'),
             ),
-            TextButton.icon(
-              onPressed: () => launchUrl(Uri.directory(ConfigStore.directory)),
-              icon: const Icon(Icons.folder_open_outlined),
-              label: const Text('Open config folder'),
-            ),
+            if (!PlatformPaths.isMobile)
+              TextButton.icon(
+                onPressed: () => launchUrl(Uri.directory(ConfigStore.directory)),
+                icon: const Icon(Icons.folder_open_outlined),
+                label: const Text('Open config folder'),
+              ),
           ],
         ),
         const SizedBox(height: 16),
@@ -1087,9 +1109,11 @@ class _SettingsPageState extends State<SettingsPage> {
       crossAxisAlignment: WrapCrossAlignment.center,
       spacing: 12,
       children: [
-        InkWell(
-          onTap: _handleVersionTap,
-          child: Text(_appVersion.isEmpty ? 'OSCSlider' : 'OSCSlider v$_appVersion', style: style),
+        NoSignalHold(
+          child: InkWell(
+            onTap: _handleVersionTap,
+            child: Text(_appVersion.isEmpty ? 'OSCSlider' : 'OSCSlider v$_appVersion', style: style),
+          ),
         ),
         InkWell(
           onTap: () => launchUrl(Uri.parse(_repoUrl)),

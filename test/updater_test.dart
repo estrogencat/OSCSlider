@@ -62,6 +62,7 @@ void main() {
           'OSCSlider-linux-x64.tar.gz',
           'OSCSlider-macos.dmg',
           'OSCSlider-macos.zip',
+          'OSCSlider-android.apk',
           'SHA256SUMS.txt',
         ],
       ),
@@ -72,6 +73,7 @@ void main() {
     expect(assetFor(info, InstallKind.deb)!.name, 'oscslider_9.0.0_amd64.deb');
     expect(assetFor(info, InstallKind.linuxPortable)!.name, 'OSCSlider-linux-x64.tar.gz');
     expect(assetFor(info, InstallKind.macos)!.name, 'OSCSlider-macos.dmg');
+    expect(assetFor(info, InstallKind.android)!.name, 'OSCSlider-android.apk');
     expect(assetFor(info, InstallKind.unknown), isNull);
   });
 

@@ -38,6 +38,7 @@ dependencies:
   multicast_dns: ^0.3.3+1
   package_info_plus: ^8.0.0
   url_launcher: ^6.3.0
+  audioplayers: ^6.8.1
 
 dev_dependencies:
   flutter_test:
@@ -95,3 +96,9 @@ flutter:
     - family: Roboto
       fonts:
         - asset: assets/fonts/Roboto-Variable.ttf
+    # just the glyphs for 无信号 (Noto Sans SC Bold, OFL), since Roboto has no CJK.
+    - family: NoSignalCJK
+      fonts:
+        - asset: assets/fonts/NoSignalCJK-Bold.ttf
+  assets:
+    - assets/easter/nosignal.mp3

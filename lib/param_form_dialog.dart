@@ -202,9 +202,12 @@ class _ParamFormDialogState extends State<ParamFormDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: Row(
+      // wraps the button under the title on a narrow screen.
+      title: Wrap(
+        alignment: WrapAlignment.spaceBetween,
+        crossAxisAlignment: WrapCrossAlignment.center,
         children: [
-          Expanded(child: Text(widget.existing == null ? 'Add Parameter' : 'Edit Parameter')),
+          Text(widget.existing == null ? 'Add Parameter' : 'Edit Parameter'),
           if (widget.existing == null)
             TextButton.icon(
               icon: const Icon(Icons.videogame_asset_outlined),
@@ -229,9 +232,10 @@ class _ParamFormDialogState extends State<ParamFormDialog> {
                 decoration: InputDecoration(
                   labelText: 'OSC address',
                   hintText: 'e.g. VF67_Mayu/Purr, or /any/full/osc/address',
-                  helperText: 'No leading "/" is shorthand for /avatar/parameters/<this>. '
+                  helperText:
+                      'No leading "/" is shorthand for /avatar/parameters/<this>. '
                       'Start with "/" to send to that exact address instead.',
-                  helperMaxLines: 2,
+                  helperMaxLines: 4,
                   errorText: _nameError,
                   errorMaxLines: 2,
                 ),
@@ -251,6 +255,7 @@ class _ParamFormDialogState extends State<ParamFormDialog> {
               ),
               const SizedBox(height: 12),
               DropdownButtonFormField<ParamType>(
+                isExpanded: true,
                 key: ValueKey('type-$_formVersion'),
                 initialValue: _type,
                 decoration: const InputDecoration(labelText: 'Type'),
@@ -272,6 +277,7 @@ class _ParamFormDialogState extends State<ParamFormDialog> {
               const SizedBox(height: 8),
               if (_type == ParamType.slider) ...[
                 DropdownButtonFormField<NumericKind>(
+                  isExpanded: true,
                   key: ValueKey('kind-$_formVersion'),
                   initialValue: _numericKind,
                   decoration: const InputDecoration(labelText: 'Numeric OSC type'),
@@ -398,12 +404,10 @@ class _ParamFormDialogState extends State<ParamFormDialog> {
                 ),
               ] else ...[
                 DropdownButtonFormField<String>(
+                  isExpanded: true,
                   initialValue: _customType,
                   decoration: const InputDecoration(labelText: 'OSC type'),
-                  items: [
-                    for (final tag in oscTypeTags)
-                      DropdownMenuItem(value: tag, child: Text(oscTypeLabel(tag))),
-                  ],
+                  items: [for (final tag in oscTypeTags) DropdownMenuItem(value: tag, child: Text(oscTypeLabel(tag)))],
                   onChanged: (v) => setState(() => _customType = v ?? 'f'),
                 ),
                 if (!oscTypeHasNoValue(_customType)) ...[
@@ -437,36 +441,36 @@ class _ParamFormDialogState extends State<ParamFormDialog> {
 const oscTypeTags = ['f', 'i', 'd', 'h', 's', 'S', 'c', 'r', 'm', 'b', 't', 'T', 'F', 'N', 'I'];
 
 String oscTypeLabel(String tag) => switch (tag) {
-      'f' => 'Float32',
-      'i' => 'Int32',
-      'd' => 'Float64 (double)',
-      'h' => 'Int64',
-      's' => 'String',
-      'S' => 'Symbol (like string)',
-      'c' => 'Char',
-      'r' => 'RGBA color',
-      'm' => 'MIDI message',
-      'b' => 'Blob (raw bytes)',
-      't' => 'Time tag',
-      'T' => 'True',
-      'F' => 'False',
-      'N' => 'Nil',
-      'I' => 'Infinitum',
-      _ => tag,
-    };
+  'f' => 'Float32',
+  'i' => 'Int32',
+  'd' => 'Float64 (double)',
+  'h' => 'Int64',
+  's' => 'String',
+  'S' => 'Symbol (like string)',
+  'c' => 'Char',
+  'r' => 'RGBA color',
+  'm' => 'MIDI message',
+  'b' => 'Blob (raw bytes)',
+  't' => 'Time tag',
+  'T' => 'True',
+  'F' => 'False',
+  'N' => 'Nil',
+  'I' => 'Infinitum',
+  _ => tag,
+};
 
 // True/False/Nil/Infinitum carry no payload bytes - the type tag itself is
 // the whole value, so there's nothing for the user to type in.
 bool oscTypeHasNoValue(String tag) => const {'T', 'F', 'N', 'I'}.contains(tag);
 
 String oscTypeValueHint(String tag) => switch (tag) {
-      'f' || 'd' => 'e.g. 1.5',
-      'i' || 'h' => 'e.g. 42',
-      's' || 'S' => 'any text',
-      'c' => 'a single character',
-      'r' => '8 hex digits: RRGGBBAA',
-      'm' => '8 hex digits: port, status, data1, data2',
-      'b' => 'hex bytes, e.g. DEADBEEF',
-      't' => 'seconds since 1900, or "immediate"',
-      _ => '',
-    };
+  'f' || 'd' => 'e.g. 1.5',
+  'i' || 'h' => 'e.g. 42',
+  's' || 'S' => 'any text',
+  'c' => 'a single character',
+  'r' => '8 hex digits: RRGGBBAA',
+  'm' => '8 hex digits: port, status, data1, data2',
+  'b' => 'hex bytes, e.g. DEADBEEF',
+  't' => 'seconds since 1900, or "immediate"',
+  _ => '',
+};

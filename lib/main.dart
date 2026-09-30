@@ -4,8 +4,10 @@ import 'dart:math';
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import 'android_platform.dart';
 import 'app_updater.dart';
 import 'automation_dialog.dart';
 import 'automation_master_switch_dialog.dart';
@@ -14,12 +16,14 @@ import 'connection_status.dart';
 import 'crash_log.dart';
 import 'discovery_flow.dart';
 import 'discovery_sheet.dart';
+import 'egg.dart';
 import 'error_dialog.dart';
 import 'live_controller.dart';
 import 'osc_input_hub.dart';
 import 'param_card.dart';
 import 'param_control.dart';
 import 'param_form_dialog.dart';
+import 'platform_paths.dart';
 import 'sequence_editor_page.dart';
 import 'sequences_page.dart';
 import 'settings_page.dart';
@@ -32,8 +36,10 @@ void main() {
   // frequently and mostly unawaited - a transient error there would
   // otherwise be an uncaught async error that silently kills the app with
   // no trace. this is the last-resort net; see CrashLog for where it lands.
-  runZonedGuarded(() {
+  runZonedGuarded(() async {
     WidgetsFlutterBinding.ensureInitialized();
+    await AndroidPlatform.init();
+    HardwareKeyboard.instance.addHandler(NoSignal.handleKey);
     FlutterError.onError = (details) {
       FlutterError.presentError(details);
       CrashLog.record(details.exception, details.stack, context: 'FlutterError');
@@ -56,14 +62,23 @@ class OscSliderApp extends StatelessWidget {
       builder: (context, settings, _) {
         return MaterialApp(
           title: 'OSCSlider',
+          navigatorKey: appNavigatorKey,
           debugShowCheckedModeBanner: false,
-          theme: ThemeData(useMaterial3: true, colorScheme: settings.buildScheme(), fontFamily: 'Roboto'),
+          theme: buildAppTheme(settings.buildScheme()),
           home: const HomePage(),
         );
       },
     );
   }
 }
+
+ThemeData buildAppTheme(ColorScheme scheme) => ThemeData(
+      useMaterial3: true,
+      colorScheme: scheme,
+      fontFamily: 'Roboto',
+      // hints under fields wrap instead of trailing off on narrow screens.
+      inputDecorationTheme: const InputDecorationThemeData(helperMaxLines: 4, errorMaxLines: 3),
+    );
 
 class HomePage extends StatefulWidget {
   /// tests skip the network-y startup bits (update check, OSCQuery) and
@@ -136,6 +151,7 @@ class _HomePageState extends State<HomePage> {
           live.replaceConfig(config);
         }
       });
+      if (widget.startServices) unawaited(AndroidPlatform.keepScreenOn(config.keepScreenOn));
       if (widget.startServices && !config.tutorialSeen) {
         WidgetsBinding.instance.addPostFrameCallback((_) => _startTour());
       }
@@ -394,6 +410,7 @@ class _HomePageState extends State<HomePage> {
     final live = _live;
     if (live == null || _touring || !mounted) return;
     _touring = true;
+    final seqInMenu = _tourSequencesKey.currentContext == null;
     try {
       await showTour(context, [
         const TourStep(
@@ -407,9 +424,12 @@ class _HomePageState extends State<HomePage> {
           target: _tourChipKey,
           icon: Icons.wifi_tethering,
           title: 'Connection',
-          body:
-              'This shows if OSCSlider can find VRChat. Green means it\'s connected.\n\n'
-              'Not green? In VRChat, open the Action Menu, go to Options, then OSC, and turn it on.',
+          body: PlatformPaths.isMobile
+              ? 'This shows if VRChat is sending anything back. Green means it is.\n\n'
+                    'To control VRChat from this phone, put your PC\'s or Quest\'s IP address in '
+                    'Settings, and turn on OSC in VRChat (Action Menu, Options, OSC).'
+              : 'This shows if OSCSlider can find VRChat. Green means it\'s connected.\n\n'
+                    'Not green? In VRChat, open the Action Menu, go to Options, then OSC, and turn it on.',
         ),
         TourStep(
           target: _tourDiscoverKey,
@@ -456,12 +476,14 @@ class _HomePageState extends State<HomePage> {
               'Turn on Auto Mode in Settings, and it switches for you when you change avatar.',
         ),
         TourStep(
-          target: _tourSequencesKey,
+          // on a narrow screen Sequences lives in the ⋮ menu.
+          target: seqInMenu ? _tourMoreKey : _tourSequencesKey,
           icon: Icons.playlist_play,
           title: 'Sequences',
           body:
               'A sequence does several things in order, like a little script. '
-              'For example: turn on the ears, wait 2 seconds, then wave.',
+              'For example: turn on the ears, wait 2 seconds, then wave.'
+              '${seqInMenu ? '\n\nYou\'ll find Sequences in this menu.' : ''}',
         ),
         TourStep(
           target: _tourMoreKey,
@@ -659,6 +681,8 @@ class _HomePageState extends State<HomePage> {
         await launchUrl(Uri.directory(ConfigStore.directory));
       case 'tour':
         await _startTour();
+      case 'sequences':
+        await _openSequencesPage();
     }
   }
 
@@ -667,6 +691,9 @@ class _HomePageState extends State<HomePage> {
   @override
   Widget build(BuildContext context) {
     final live = _live;
+    // phones and small windows: the chip shrinks to a dot and Sequences
+    // moves into the ⋮ menu, so the profile name still fits.
+    final narrow = MediaQuery.sizeOf(context).width < 600;
     return Scaffold(
       appBar: AppBar(
         title: live == null ? const Text('OSCSlider') : _buildProfileSwitcher(live),
@@ -674,7 +701,7 @@ class _HomePageState extends State<HomePage> {
           if (live != null)
             KeyedSubtree(
               key: _tourChipKey,
-              child: ConnectionChip(live: live),
+              child: ConnectionChip(live: live, compact: narrow),
             ),
           IconButton(
             key: _tourDiscoverKey,
@@ -684,12 +711,13 @@ class _HomePageState extends State<HomePage> {
             tooltip: 'Discover parameters from VRChat',
             onPressed: _discovering || live == null ? null : _discover,
           ),
-          IconButton(
-            key: _tourSequencesKey,
-            icon: const Icon(Icons.playlist_play),
-            tooltip: 'Sequences',
-            onPressed: live == null ? null : _openSequencesPage,
-          ),
+          if (!narrow)
+            IconButton(
+              key: _tourSequencesKey,
+              icon: const Icon(Icons.playlist_play),
+              tooltip: 'Sequences',
+              onPressed: live == null ? null : _openSequencesPage,
+            ),
           IconButton(
             key: _tourSettingsKey,
             icon: const Icon(Icons.settings_outlined),
@@ -702,6 +730,13 @@ class _HomePageState extends State<HomePage> {
             enabled: live != null,
             onSelected: _onMenu,
             itemBuilder: (context) => [
+              if (narrow) ...[
+                const PopupMenuItem(
+                  value: 'sequences',
+                  child: ListTile(leading: Icon(Icons.playlist_play), title: Text('Sequences')),
+                ),
+                const PopupMenuDivider(),
+              ],
               PopupMenuItem(
                 value: 'pull',
                 enabled: !_pulling,
@@ -719,10 +754,11 @@ class _HomePageState extends State<HomePage> {
                 value: 'reload',
                 child: ListTile(leading: Icon(Icons.refresh), title: Text('Reload config.json')),
               ),
-              const PopupMenuItem(
-                value: 'folder',
-                child: ListTile(leading: Icon(Icons.folder_open_outlined), title: Text('Open config folder')),
-              ),
+              if (!PlatformPaths.isMobile)
+                const PopupMenuItem(
+                  value: 'folder',
+                  child: ListTile(leading: Icon(Icons.folder_open_outlined), title: Text('Open config folder')),
+                ),
               const PopupMenuDivider(),
               const PopupMenuItem(
                 value: 'tour',

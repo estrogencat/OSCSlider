@@ -54,9 +54,10 @@ class UpdateInfo {
 }
 
 /// how this copy was installed, which decides how it can update itself.
-enum InstallKind { windowsInstaller, windowsPortable, appImage, deb, linuxPortable, macos, unknown }
+enum InstallKind { windowsInstaller, windowsPortable, appImage, deb, linuxPortable, macos, android, unknown }
 
 InstallKind detectInstallKind() {
+  if (Platform.isAndroid) return InstallKind.android;
   try {
     final exeDir = File(Platform.resolvedExecutable).parent.path;
     if (Platform.isWindows) {
@@ -85,6 +86,7 @@ ReleaseAsset? assetFor(UpdateInfo info, InstallKind kind) {
     InstallKind.deb => (n) => n.endsWith('_amd64.deb'),
     InstallKind.linuxPortable => (n) => n.startsWith('OSCSlider-linux') && n.endsWith('.tar.gz'),
     InstallKind.macos => (n) => n.endsWith('.dmg'),
+    InstallKind.android => (n) => n.endsWith('.apk'),
     InstallKind.unknown => (_) => false,
   };
   for (final a in info.assets) {
