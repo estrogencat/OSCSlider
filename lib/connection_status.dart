@@ -120,6 +120,10 @@ Future<void> showConnectionDetails(BuildContext context, LiveController live) {
 
         final oscQueryLine = service == null
             ? 'Not started.'
+            : !service.advertise
+            ? 'Not used on a phone - VRChat only sends to OSCQuery apps on its own computer. To receive, '
+                  'forward to this phone from OSCSlider on your PC (Settings > Other OSC apps), or launch '
+                  'VRChat with --osc=9000:<this phone\'s IP>:9001.'
             : service.isAdvertising
             ? 'Advertised as "${service.instanceName}" - VRChat sends its output to port ${service.oscPort}.'
             : 'Not fully running:\n${service.error ?? 'unknown error'}';

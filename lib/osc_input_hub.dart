@@ -8,6 +8,7 @@ import 'crash_log.dart';
 import 'osc_listener.dart';
 import 'osc_relay.dart';
 import 'oscquery_service.dart';
+import 'platform_paths.dart';
 
 /// what the app currently knows about VRChat, for the status chip.
 @immutable
@@ -82,7 +83,10 @@ class OscInputHub {
   Future<void> start({required int legacyPort}) async {
     _legacyPort = legacyPort;
     if (_service != null) return;
-    final service = OscQueryService(onPacket: (data) => _onPacket(data, viaOscQuery: true));
+    final service = OscQueryService(
+      onPacket: (data) => _onPacket(data, viaOscQuery: true),
+      advertise: !PlatformPaths.isMobile,
+    );
     _service = service;
     service.peersRevision.addListener(_refreshStatus);
     await service.start();

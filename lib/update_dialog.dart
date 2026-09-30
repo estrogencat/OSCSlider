@@ -49,6 +49,12 @@ class _UpdateDialogState extends State<_UpdateDialog> {
   Future<void> _start() async {
     final asset = _asset;
     if (asset == null) return;
+    if (_kind == InstallKind.android) {
+      // the browser downloads it, then Android's own installer takes over.
+      await launchUrl(asset.url, mode: LaunchMode.externalApplication);
+      if (mounted) Navigator.of(context).pop();
+      return;
+    }
     final cancel = _cancel = UpdateCancelToken();
     setState(() {
       _stage = _Stage.downloading;
@@ -116,6 +122,7 @@ class _UpdateDialogState extends State<_UpdateDialog> {
     InstallKind.windowsInstaller || InstallKind.appImage => 'Update and restart',
     InstallKind.deb => 'Download and install',
     InstallKind.macos => 'Download',
+    InstallKind.android => 'Download APK',
     _ => 'Download',
   };
 

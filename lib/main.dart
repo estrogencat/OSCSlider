@@ -6,6 +6,7 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import 'android_platform.dart';
 import 'app_updater.dart';
 import 'automation_dialog.dart';
 import 'automation_master_switch_dialog.dart';
@@ -20,6 +21,7 @@ import 'osc_input_hub.dart';
 import 'param_card.dart';
 import 'param_control.dart';
 import 'param_form_dialog.dart';
+import 'platform_paths.dart';
 import 'sequence_editor_page.dart';
 import 'sequences_page.dart';
 import 'settings_page.dart';
@@ -32,8 +34,9 @@ void main() {
   // frequently and mostly unawaited - a transient error there would
   // otherwise be an uncaught async error that silently kills the app with
   // no trace. this is the last-resort net; see CrashLog for where it lands.
-  runZonedGuarded(() {
+  runZonedGuarded(() async {
     WidgetsFlutterBinding.ensureInitialized();
+    await AndroidPlatform.init();
     FlutterError.onError = (details) {
       FlutterError.presentError(details);
       CrashLog.record(details.exception, details.stack, context: 'FlutterError');
@@ -144,6 +147,7 @@ class _HomePageState extends State<HomePage> {
           live.replaceConfig(config);
         }
       });
+      if (widget.startServices) unawaited(AndroidPlatform.keepScreenOn(config.keepScreenOn));
       if (widget.startServices && !config.tutorialSeen) {
         WidgetsBinding.instance.addPostFrameCallback((_) => _startTour());
       }
@@ -416,9 +420,12 @@ class _HomePageState extends State<HomePage> {
           target: _tourChipKey,
           icon: Icons.wifi_tethering,
           title: 'Connection',
-          body:
-              'This shows if OSCSlider can find VRChat. Green means it\'s connected.\n\n'
-              'Not green? In VRChat, open the Action Menu, go to Options, then OSC, and turn it on.',
+          body: PlatformPaths.isMobile
+              ? 'This shows if VRChat is sending anything back. Green means it is.\n\n'
+                    'To control VRChat from this phone, put your PC\'s or Quest\'s IP address in '
+                    'Settings, and turn on OSC in VRChat (Action Menu, Options, OSC).'
+              : 'This shows if OSCSlider can find VRChat. Green means it\'s connected.\n\n'
+                    'Not green? In VRChat, open the Action Menu, go to Options, then OSC, and turn it on.',
         ),
         TourStep(
           target: _tourDiscoverKey,
@@ -743,10 +750,11 @@ class _HomePageState extends State<HomePage> {
                 value: 'reload',
                 child: ListTile(leading: Icon(Icons.refresh), title: Text('Reload config.json')),
               ),
-              const PopupMenuItem(
-                value: 'folder',
-                child: ListTile(leading: Icon(Icons.folder_open_outlined), title: Text('Open config folder')),
-              ),
+              if (!PlatformPaths.isMobile)
+                const PopupMenuItem(
+                  value: 'folder',
+                  child: ListTile(leading: Icon(Icons.folder_open_outlined), title: Text('Open config folder')),
+                ),
               const PopupMenuDivider(),
               const PopupMenuItem(
                 value: 'tour',

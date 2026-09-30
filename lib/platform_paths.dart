@@ -11,6 +11,12 @@ class PlatformPaths {
 
   static String? get home => _env('HOME') ?? _env('USERPROFILE');
 
+  static bool get isMobile => Platform.isAndroid || Platform.isIOS;
+
+  /// the app's private storage on Android, looked up once at startup
+  /// (see AndroidPlatform.init) since there's no environment variable for it.
+  static String? androidFilesDir;
+
   /// the app's own settings folder:
   /// - Windows: %APPDATA%\OSCSlider (a Program Files install isn't writable)
   /// - macOS: ~/Library/Application Support/OSCSlider (inside the sandbox
@@ -18,7 +24,9 @@ class PlatformPaths {
   /// - Linux: $XDG_CONFIG_HOME/OSCSlider, else ~/.config/OSCSlider
   static Directory configDir() {
     String? base;
-    if (Platform.isWindows) {
+    if (Platform.isAndroid) {
+      base = androidFilesDir;
+    } else if (Platform.isWindows) {
       base = _env('APPDATA');
     } else if (Platform.isMacOS) {
       final h = home;
@@ -56,6 +64,7 @@ class PlatformPaths {
   /// VRChat runs under Proton, so its "LocalLow" lives inside a Steam
   /// compatdata prefix, in whichever Steam library it's installed to.
   static List<Directory> vrchatOscRoots() {
+    if (isMobile) return const [];
     const tail = ['AppData', 'LocalLow', 'VRChat', 'VRChat', 'OSC'];
     if (Platform.isWindows) {
       final local = _env('LOCALAPPDATA');

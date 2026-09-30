@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- the faders from assets/icon/oscslider.svg, sized for the adaptive icon safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+  <group android:scaleX="0.2167" android:scaleY="0.2167" android:translateX="-1.475" android:translateY="-1.475">
+    <path android:pathData="M176,148 L176,364" android:strokeColor="#59FFFFFF" android:strokeWidth="28" android:strokeLineCap="round"/><path android:pathData="M256,148 L256,364" android:strokeColor="#59FFFFFF" android:strokeWidth="28" android:strokeLineCap="round"/><path android:pathData="M336,148 L336,364" android:strokeColor="#59FFFFFF" android:strokeWidth="28" android:strokeLineCap="round"/>
+    <path android:pathData="M158.0,270 h36.0 a22.0,22.0 0 0 1 0,44.0 h-36.0 a22.0,22.0 0 0 1 0,-44.0 z" android:fillColor="#FFFFFFFF"/><path android:pathData="M238.0,174 h36.0 a22.0,22.0 0 0 1 0,44.0 h-36.0 a22.0,22.0 0 0 1 0,-44.0 z" android:fillColor="#FFFFFFFF"/><path android:pathData="M318.0,222 h36.0 a22.0,22.0 0 0 1 0,44.0 h-36.0 a22.0,22.0 0 0 1 0,-44.0 z" android:fillColor="#FFFFFFFF"/>
+  </group>
+</vector>
