@@ -1,10 +1,13 @@
+import 'dart:collection';
+
 import 'package:flutter/material.dart';
 
 import 'automation_dialog.dart';
+import 'discovery_flow.dart';
 import 'discovery_sheet.dart';
 import 'error_dialog.dart';
-import 'osc_client.dart';
-import 'oscquery_client.dart';
+import 'live_controller.dart';
+import 'param_card.dart';
 import 'param_control.dart';
 import 'param_form_dialog.dart';
 import 'trigger_fields.dart';
@@ -12,33 +15,16 @@ import 'trigger_fields.dart';
 /// full-page editor for one sequence - its own settings/steps, plus a full
 /// parameter/automation panel (mirroring the main screen) so a sequence can
 /// be built end-to-end without leaving the page. the parameter panel reads
-/// and writes the SAME shared parameter list/live values/OSC client as the
-/// main screen - it's one more place to manage them, not a separate copy.
+/// and writes the SAME shared live state as the main screen - it's one more
+/// place to manage them, not a separate copy.
+///
+/// every change is saved as it's made (writes are coalesced), so nothing is
+/// lost if the app closes with this page open.
 class SequenceEditorPage extends StatefulWidget {
   final AutomationSequence sequence;
-  final AppConfig config;
-  final Map<String, Object> values;
-  final Map<String, TextEditingController> sliderTextControllers;
-  final Map<String, TextEditingController> customValueControllers;
-  final OscClient? osc;
-  final bool advancedMode;
-  final bool developerMode;
-  final VoidCallback onPersist;
-  final void Function(ParamControl param) onInteraction;
+  final LiveController live;
 
-  const SequenceEditorPage({
-    super.key,
-    required this.sequence,
-    required this.config,
-    required this.values,
-    required this.sliderTextControllers,
-    required this.customValueControllers,
-    required this.osc,
-    required this.advancedMode,
-    required this.developerMode,
-    required this.onPersist,
-    required this.onInteraction,
-  });
+  const SequenceEditorPage({super.key, required this.sequence, required this.live});
 
   @override
   State<SequenceEditorPage> createState() => _SequenceEditorPageState();
@@ -55,13 +41,11 @@ class _SequenceEditorPageState extends State<SequenceEditorPage> {
   final _paramSearchController = TextEditingController();
   String _paramSearchQuery = '';
   bool _discovering = false;
-  // developer-mode-only escape hatch: a second Discover click within 1s of a
-  // "nothing found" failure opens the add menu anyway, empty - same shortcut
-  // as the main screen's discover icon.
-  DateTime? _lastDiscoverFailure;
+  bool _showParams = true;
 
   AutomationSequence get seq => widget.sequence;
-  List<ParamControl> get _parameters => widget.config.parameters;
+  LiveController get live => widget.live;
+  List<ParamControl> get _parameters => live.parameters;
 
   // only sliders/toggles are settable step targets - custom-type params have
   // no single "value" this app can drive.
@@ -93,20 +77,21 @@ class _SequenceEditorPageState extends State<SequenceEditorPage> {
     super.dispose();
   }
 
-  void _renameSequence(String value) {
-    setState(() => seq.name = value.trim().isEmpty ? seq.name : value.trim());
+  void _update(VoidCallback change) {
+    setState(change);
+    live.persist();
   }
 
-  void _setRepeatMode(SequenceRepeatMode mode) {
-    setState(() => seq.repeatMode = mode);
+  void _renameSequence(String value) {
+    final trimmed = value.trim();
+    if (trimmed.isEmpty || trimmed == seq.name) return;
+    _update(() => seq.name = trimmed);
   }
 
   void _setRepeatCount(String value) {
-    setState(() => seq.repeatCount = int.tryParse(value)?.clamp(0, 1000000) ?? 0);
-  }
-
-  void _setEnabled(bool value) {
-    setState(() => seq.enabled = value);
+    final parsed = (int.tryParse(value.trim()) ?? 0).clamp(0, 1000000);
+    _repeatCountController.text = '$parsed';
+    if (parsed != seq.repeatCount) _update(() => seq.repeatCount = parsed);
   }
 
   bool get _triggerEnabled => seq.trigger?.enabled ?? false;
@@ -114,78 +99,56 @@ class _SequenceEditorPageState extends State<SequenceEditorPage> {
   ToggleTriggerCondition get _toggleCondition => seq.trigger?.toggleCondition ?? ToggleTriggerCondition.turnsOn;
   RangeTriggerCondition get _rangeCondition => seq.trigger?.rangeCondition ?? RangeTriggerCondition.above;
 
-  void _setTriggerEnabled(bool value) {
-    setState(() {
-      seq.trigger ??= ParamTrigger(watchedParamName: _eligibleParams.isEmpty ? '' : _eligibleParams.first.name);
-      seq.trigger!.enabled = value;
-    });
-  }
-
-  void _setWatchedParam(String name) {
-    setState(() {
-      seq.trigger ??= ParamTrigger();
-      seq.trigger!.watchedParamName = name;
-    });
-  }
-
-  void _setToggleCondition(ToggleTriggerCondition c) {
-    setState(() {
-      seq.trigger ??= ParamTrigger();
-      seq.trigger!.toggleCondition = c;
-    });
-  }
-
-  void _setRangeCondition(RangeTriggerCondition c) {
-    setState(() {
-      seq.trigger ??= ParamTrigger();
-      seq.trigger!.rangeCondition = c;
-    });
+  ParamTrigger _trigger() {
+    final eligible = _eligibleParams;
+    final t = seq.trigger ??= ParamTrigger(watchedParamName: eligible.isEmpty ? '' : eligible.first.name);
+    // a watched parameter that's since been deleted - the picker shows the
+    // first eligible one, so make that what's actually stored too.
+    if (eligible.isNotEmpty && !eligible.any((p) => p.name == t.watchedParamName)) {
+      t.watchedParamName = eligible.first.name;
+    }
+    return t;
   }
 
   void _setTriggerThreshold(String text) {
-    final v = double.tryParse(text);
-    if (v != null) setState(() => (seq.trigger ??= ParamTrigger()).threshold = v);
+    final v = parseUserDouble(text);
+    if (v != null) _update(() => _trigger().threshold = v);
   }
 
   void _setTriggerRangeMin(String text) {
-    final v = double.tryParse(text);
-    if (v != null) setState(() => (seq.trigger ??= ParamTrigger()).rangeMin = v);
+    final v = parseUserDouble(text);
+    if (v != null) _update(() => _trigger().rangeMin = v);
   }
 
   void _setTriggerRangeMax(String text) {
-    final v = double.tryParse(text);
-    if (v != null) setState(() => (seq.trigger ??= ParamTrigger()).rangeMax = v);
+    final v = parseUserDouble(text);
+    if (v != null) _update(() => _trigger().rangeMax = v);
   }
 
   void _setTriggerRequiredHits(String text) {
-    final v = int.tryParse(text);
-    if (v != null) setState(() => (seq.trigger ??= ParamTrigger()).requiredHits = v < 1 ? 1 : v);
+    final v = int.tryParse(text.trim());
+    if (v != null) _update(() => _trigger().requiredHits = v < 1 ? 1 : v);
   }
 
+  // onReorderItem already hands over the index after removal.
   void _reorder(int oldIndex, int newIndex) {
-    setState(() {
-      if (newIndex > oldIndex) newIndex -= 1;
+    _update(() {
       final step = seq.steps.removeAt(oldIndex);
-      seq.steps.insert(newIndex, step);
+      seq.steps.insert(newIndex.clamp(0, seq.steps.length), step);
     });
   }
 
   Future<void> _addStep() async {
-    if (_eligibleParams.isEmpty) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('No slider/toggle parameters to target yet.')));
-      return;
-    }
     final step = await _showStepDialog(context, null, _eligibleParams);
-    if (step != null) setState(() => seq.steps.add(step));
+    if (step != null) _update(() => seq.steps.add(step));
   }
 
   Future<void> _editStep(int index) async {
     final result = await _showStepDialog(context, seq.steps[index], _eligibleParams);
-    if (result == null) return;
+    if (result == null || index >= seq.steps.length) return;
     // mutate the existing step in place (rather than replacing it) so its
     // identity - and the reorderable list's key for it - stays stable.
-    setState(() {
+    _update(() {
       final step = seq.steps[index];
       step.kind = result.kind;
       step.paramName = result.paramName;
@@ -195,12 +158,14 @@ class _SequenceEditorPageState extends State<SequenceEditorPage> {
     });
   }
 
-  // removes only this step from the sequence's own step list - never
-  // touches config.parameters, so it can't delete the underlying parameter
-  // from the main screen no matter how it's triggered (icon or this menu).
-  void _deleteStep(int index) {
-    setState(() => seq.steps.removeAt(index));
+  void _duplicateStep(int index) {
+    final s = seq.steps[index];
+    _update(() => seq.steps.insert(index + 1, SequenceStep.fromJson(s.toJson())));
   }
+
+  // removes only this step from the sequence's own step list - never
+  // touches the parameter itself.
+  void _deleteStep(int index) => _update(() => seq.steps.removeAt(index));
 
   Future<void> _showStepContextMenu(BuildContext context, Offset globalPosition, int index) async {
     final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
@@ -214,56 +179,37 @@ class _SequenceEditorPageState extends State<SequenceEditorPage> {
       ),
       items: const [
         PopupMenuItem(value: 'edit', child: Text('Edit')),
+        PopupMenuItem(value: 'duplicate', child: Text('Duplicate')),
         PopupMenuItem(value: 'delete', child: Text('Delete')),
       ],
     );
-    if (selected == 'delete') {
-      _deleteStep(index);
-    } else if (selected == 'edit') {
-      await _editStep(index);
+    switch (selected) {
+      case 'delete':
+        _deleteStep(index);
+      case 'duplicate':
+        _duplicateStep(index);
+      case 'edit':
+        await _editStep(index);
     }
-  }
-
-  // dragging the inline slider/switch updates the step's target directly -
-  // the same value editing the main screen offers for the live parameter
-  // itself, just applied to what this step will set it to.
-  void _setStepTargetValue(int index, double value) {
-    setState(() => seq.steps[index].targetValue = value);
-  }
-
-  void _setStepTargetBool(int index, bool value) {
-    setState(() => seq.steps[index].targetBool = value);
   }
 
   String _stepTitle(SequenceStep step) {
-    final param = _eligibleParams.where((p) => p.name == step.paramName).firstOrNull;
+    final param = _findEligible(step.paramName);
     final label = param?.label ?? step.paramName;
     if (param?.type == ParamType.toggle) {
-      return 'Set "$label", hold ${_fmt(step.durationSeconds)}s';
+      return 'Set "$label" ${step.targetBool ? 'on' : 'off'}, hold ${_fmt(step.durationSeconds)}s';
     }
-    return 'Set "$label" over ${_fmt(step.durationSeconds)}s';
+    if (step.durationSeconds <= 0) return 'Set "$label" to ${_fmt(step.targetValue)}';
+    return 'Glide "$label" to ${_fmt(step.targetValue)} over ${_fmt(step.durationSeconds)}s';
   }
 
   String _fmt(double v) => v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toStringAsFixed(2);
 
   // ---- parameter panel (mirrors the main screen's add/edit/automation) ----
 
-  void _initValueAndController(ParamControl p) {
-    switch (p.type) {
-      case ParamType.toggle:
-        widget.values[p.name] = p.defaultBool;
-      case ParamType.slider:
-        widget.values[p.name] = p.defaultValue;
-        widget.sliderTextControllers[p.name] =
-            TextEditingController(text: formatParamNumber(p.defaultValue, widget.advancedMode));
-      case ParamType.custom:
-        widget.customValueControllers[p.name] = TextEditingController(text: p.customValueText);
-    }
-  }
-
   // owned by this sequence, not the parameter - never touches or enables
-  // param.automation. runs continuously (via _tickEngines in main.dart)
-  // for as long as this sequence itself is enabled/running.
+  // param.automation. runs (via the shared tick loop) for as long as this
+  // sequence itself is enabled/running.
   Future<void> _openAutomationDialog(ParamControl param) async {
     final result = await showSequenceParamAutomationDialog(
       context,
@@ -272,14 +218,13 @@ class _SequenceEditorPageState extends State<SequenceEditorPage> {
       seq.paramAutomations[param.name],
     );
     if (!result.changed) return;
-    setState(() {
+    _update(() {
       if (result.automation == null) {
         seq.paramAutomations.remove(param.name);
       } else {
         seq.paramAutomations[param.name] = result.automation!;
       }
     });
-    widget.onPersist();
   }
 
   Widget _automationButton(ParamControl param) {
@@ -287,8 +232,7 @@ class _SequenceEditorPageState extends State<SequenceEditorPage> {
     final configured = auto != null;
     // a step in this same sequence targeting the same parameter always wins
     // over this automation - the engine suppresses the automation's ticks
-    // while that holds (see main.dart's _tickEngines), rather than letting
-    // both send competing OSC values every tick.
+    // while that holds, rather than letting both send competing values.
     final stepConflict =
         configured && seq.steps.any((s) => s.kind == SequenceStepKind.setValue && s.paramName == param.name);
     final running = configured && seq.enabled && auto.enabled && !stepConflict;
@@ -308,88 +252,26 @@ class _SequenceEditorPageState extends State<SequenceEditorPage> {
     );
   }
 
-  void _onParamSliderChanged(ParamControl param, double value) {
-    widget.onInteraction(param);
-    setState(() => widget.values[param.name] = value);
-    widget.sliderTextControllers[param.name]?.text = formatParamNumber(value, widget.advancedMode);
-    _sendParamSlider(param, value);
-  }
-
-  void _sendParamSlider(ParamControl param, double value) {
-    final address = oscAddressFor(param);
-    if (param.numericKind == NumericKind.int) {
-      widget.osc?.sendInt(address, value.round());
-    } else {
-      widget.osc?.sendFloat(address, value);
-    }
-  }
-
-  void _onParamSliderTextSubmitted(ParamControl param, String text) {
-    final value = double.tryParse(text);
-    if (value == null) {
-      widget.sliderTextControllers[param.name]?.text =
-          formatParamNumber(widget.values[param.name] as double? ?? param.defaultValue, widget.advancedMode);
-      return;
-    }
-    widget.onInteraction(param);
-    setState(() => widget.values[param.name] = value);
-    widget.sliderTextControllers[param.name]?.text = formatParamNumber(value, widget.advancedMode);
-    _sendParamSlider(param, value);
-  }
-
-  void _onParamToggleChanged(ParamControl param, bool value) {
-    widget.onInteraction(param);
-    setState(() => widget.values[param.name] = value);
-    widget.osc?.sendBool(oscAddressFor(param), value);
-  }
-
-  Future<void> _sendParamCustom(ParamControl param) async {
-    final text = widget.customValueControllers[param.name]?.text ?? param.customValueText;
-    try {
-      await widget.osc?.sendCustom(oscAddressFor(param), param.customTypeTag, text);
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Send failed: $e')));
-    }
+  Future<void> _editParam(ParamControl param) async {
+    final result = await showParamFormDialog(
+      context,
+      existing: param,
+      takenNames: {for (final p in _parameters) p.name},
+    );
+    if (result == null) return;
+    live.replaceParam(param, result);
   }
 
   Future<void> _deleteParam(ParamControl param) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Delete parameter?'),
-        content: Text('Remove "${param.label}" from the dashboard?'),
-        actions: [
-          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.of(context).pop(true), child: const Text('Delete')),
-        ],
-      ),
+    final ok = await confirmDialog(
+      context,
+      title: 'Delete parameter?',
+      message: 'Remove "${param.label}" from this profile entirely (not just this sequence)?',
     );
-    if (confirmed != true) return;
-    setState(() {
-      _parameters.remove(param);
-      widget.sliderTextControllers.remove(param.name)?.dispose();
-      widget.customValueControllers.remove(param.name)?.dispose();
-      widget.values.remove(param.name);
-    });
-    widget.onPersist();
+    if (ok) live.removeParam(param);
   }
 
-  Future<void> _editParam(ParamControl param) async {
-    final result = await showParamFormDialog(context, existing: param);
-    if (result == null) return;
-    final index = _parameters.indexOf(param);
-    if (index != -1) _parameters[index] = result;
-    // the edited param's name/type may have changed, so drop its old
-    // controller/value first and reinitialize just this one.
-    widget.sliderTextControllers.remove(param.name)?.dispose();
-    widget.customValueControllers.remove(param.name)?.dispose();
-    widget.values.remove(param.name);
-    setState(() => _initValueAndController(result));
-    widget.onPersist();
-  }
-
-  Future<void> _showParamContextMenu(BuildContext context, Offset globalPosition, ParamControl param) async {
+  Future<void> _showParamMenu(Offset globalPosition, ParamControl param) async {
     final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
     final selected = await showMenu<String>(
       context: context,
@@ -401,130 +283,67 @@ class _SequenceEditorPageState extends State<SequenceEditorPage> {
       ),
       items: [
         const PopupMenuItem(value: 'edit', child: Text('Edit')),
-        if (param.type != ParamType.custom) const PopupMenuItem(value: 'fetch', child: Text('Fetch value')),
-        const PopupMenuItem(value: 'delete', child: Text('Delete')),
+        if (param.type != ParamType.custom) const PopupMenuItem(value: 'step', child: Text('Add a step for this')),
+        if (param.type != ParamType.custom) const PopupMenuItem(value: 'fetch', child: Text('Fetch value from VRChat')),
+        const PopupMenuItem(value: 'delete', child: Text('Delete from profile')),
       ],
     );
-    if (selected == 'delete') {
-      await _deleteParam(param);
-    } else if (selected == 'edit') {
-      await _editParam(param);
-    } else if (selected == 'fetch') {
-      await _fetchValue(param);
-    }
-  }
-
-  // pulls the parameter's current live value from VRChat's OSCQuery tree and
-  // snaps the local display to it - read-only, nothing is sent back over OSC.
-  Future<void> _fetchValue(ParamControl param) async {
-    final messenger = ScaffoldMessenger.of(context);
-    final result = await OscQueryClient.findVrchatInstances(anyOscQueryService: widget.developerMode);
     if (!mounted) return;
-    if (result.instances.isEmpty) {
-      await showErrorDialog(context, 'No OSCQuery service found', result.error ?? oscNotFoundExplanation);
-      return;
+    switch (selected) {
+      case 'delete':
+        await _deleteParam(param);
+      case 'edit':
+        await _editParam(param);
+      case 'step':
+        final step = await _showStepDialog(
+          context,
+          SequenceStep(
+            kind: SequenceStepKind.setValue,
+            paramName: param.name,
+            targetValue: live.sliderValue(param),
+            targetBool: !live.toggleValue(param),
+          ),
+          _eligibleParams,
+          isNew: true,
+        );
+        if (step != null) _update(() => seq.steps.add(step));
+      case 'fetch':
+        final value = await fetchLiveValue(
+          context,
+          param,
+          developerMode: live.config.developerMode,
+          timeout: Duration(seconds: live.config.oscQueryFetchTimeoutSeconds),
+        );
+        if (value != null) live.setLocalValue(param, value);
     }
-    final (host, port) = result.instances.first;
-    final Object? value;
-    try {
-      value = await OscQueryClient.fetchParameterValue(host, port, param.name);
-    } catch (e) {
-      if (!mounted) return;
-      await showErrorDialog(context, 'Could not fetch "${param.label}"', e.toString());
-      return;
-    }
-    if (!mounted) return;
-    if (value == null) {
-      await showErrorDialog(
-        context,
-        'Parameter not found',
-        'Could not find "${param.label}" on the avatar - it may not exist under that name.',
-      );
-      return;
-    }
-    widget.onInteraction(param);
-    if (param.type == ParamType.toggle && value is bool) {
-      final boolValue = value;
-      setState(() => widget.values[param.name] = boolValue);
-    } else if (param.type == ParamType.slider && value is double) {
-      final doubleValue = value;
-      setState(() => widget.values[param.name] = doubleValue);
-      widget.sliderTextControllers[param.name]?.text = formatParamNumber(doubleValue, widget.advancedMode);
-    } else {
-      messenger.showSnackBar(SnackBar(content: Text('"${param.label}" is a different type on the avatar - not applied.')));
-    }
-  }
-
-  Future<void> _openDiscoverySheet(
-    List<DiscoveredParam> found, {
-    bool fetchFailed = false,
-    String? failureDetail,
-  }) async {
-    await showDiscoveryResultsSheet(
-      context,
-      found: found,
-      autoStartLive: fetchFailed,
-      fetchFailed: fetchFailed,
-      failureDetail: failureDetail,
-      developerMode: widget.developerMode,
-      avatarChangeListenPort: widget.config.port + 1,
-      noiseThreshold: widget.config.liveParamNoiseThreshold,
-      existingNames: _parameters.map((p) => p.name).toSet(),
-      onAdd: (control) {
-        _parameters.add(control);
-        setState(() => _initValueAndController(control));
-        widget.onPersist();
-      },
-    );
   }
 
   Future<void> _discover() async {
-    final devMode = widget.developerMode;
-    if (devMode &&
-        _lastDiscoverFailure != null &&
-        DateTime.now().difference(_lastDiscoverFailure!) <= const Duration(seconds: 1)) {
-      _lastDiscoverFailure = null;
-      await _openDiscoverySheet(const []);
-      return;
-    }
-
     setState(() => _discovering = true);
     try {
-      final fetchTimeout = Duration(seconds: widget.config.oscQueryFetchTimeoutSeconds);
-      final result = await OscQueryClient.findVrchatInstances(anyOscQueryService: devMode, timeout: fetchTimeout);
+      final result = await loadDiscovery(
+        developerMode: live.config.developerMode,
+        timeout: Duration(seconds: live.config.oscQueryFetchTimeoutSeconds),
+      );
       if (!mounted) return;
-      if (result.instances.isEmpty) {
-        _lastDiscoverFailure = devMode ? DateTime.now() : null;
-        await showErrorDialog(
-          context,
-          'No OSCQuery service found',
-          (result.error ?? oscNotFoundExplanation) +
-              (devMode ? '\n\nClick Discover again within 1s to bring up the add menu anyway (developer mode).' : ''),
-        );
-        return;
-      }
-      final (host, port) = result.instances.first;
-      List<DiscoveredParam> found;
-      var fetchFailed = false;
-      String? failureDetail;
-      try {
-        found = await OscQueryClient.fetchAvatarParameters(host, port, perAttemptTimeout: fetchTimeout);
-      } catch (e) {
-        // some avatars' full parameter tree makes VRChat's own OSCQuery HTTP
-        // server hang outright - fall back to building the list from live
-        // outgoing OSC traffic instead of blocking the whole feature on it.
-        found = const [];
-        fetchFailed = true;
-        failureDetail = e.toString();
-      }
-      if (!mounted) return;
-      await _openDiscoverySheet(found, fetchFailed: fetchFailed, failureDetail: failureDetail);
+      setState(() => _discovering = false);
+      await showDiscoveryResultsSheet(
+        context,
+        result: result,
+        noiseThreshold: live.config.liveParamNoiseThreshold,
+        existingNames: {for (final p in _parameters) p.name},
+        onAdd: live.addParam,
+      );
     } catch (e) {
-      if (!mounted) return;
-      await showErrorDialog(context, 'Discovery failed', e.toString());
+      if (mounted) await showErrorDialog(context, 'Discovery failed', e.toString());
     } finally {
       if (mounted) setState(() => _discovering = false);
     }
+  }
+
+  Future<void> _addParamManually() async {
+    final control = await showParamFormDialog(context, takenNames: {for (final p in _parameters) p.name});
+    if (control != null) live.addParam(control);
   }
 
   Widget _buildParametersSection(BuildContext context) {
@@ -534,345 +353,327 @@ class _SequenceEditorPageState extends State<SequenceEditorPage> {
         ? params
         : params.where((p) => p.label.toLowerCase().contains(query) || p.name.toLowerCase().contains(query)).toList();
     return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Text('Parameters', style: Theme.of(context).textTheme.titleLarge),
+            IconButton(
+              icon: Icon(_showParams ? Icons.expand_more : Icons.chevron_right),
+              onPressed: () => setState(() => _showParams = !_showParams),
+            ),
+            Expanded(child: Text('Parameters', style: Theme.of(context).textTheme.titleLarge)),
+            IconButton(
+              icon: const Icon(Icons.edit_note),
+              tooltip: 'Add a parameter by hand',
+              onPressed: _addParamManually,
+            ),
             IconButton(
               icon: _discovering
                   ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
                   : const Icon(Icons.wifi_find),
-              tooltip: 'Discover parameters from running VRChat (OSCQuery)',
+              tooltip: 'Discover parameters from VRChat',
               onPressed: _discovering ? null : _discover,
             ),
           ],
         ),
-        SearchBar(
-          controller: _paramSearchController,
-          hintText: 'Search parameters',
-          leading: const Icon(Icons.search),
-          trailing: _paramSearchQuery.isEmpty
-              ? null
-              : [
-                  IconButton(
-                    icon: const Icon(Icons.clear),
-                    onPressed: () {
-                      _paramSearchController.clear();
-                      setState(() => _paramSearchQuery = '');
-                    },
-                  ),
-                ],
-          onChanged: (v) => setState(() => _paramSearchQuery = v),
-        ),
-        const SizedBox(height: 8),
-        if (params.isEmpty)
-          const Padding(
-            padding: EdgeInsets.symmetric(vertical: 8),
-            child: Text('No parameters yet. Tap the discover icon to add some.'),
-          )
-        else if (filtered.isEmpty)
-          const Padding(
-            padding: EdgeInsets.symmetric(vertical: 8),
-            child: Text('No parameters match your search.'),
-          )
-        else
-          for (final p in filtered) _buildParamCard(context, p),
-      ],
-    );
-  }
-
-  Widget _buildParamCard(BuildContext context, ParamControl param) {
-    Widget child;
-    switch (param.type) {
-      case ParamType.toggle:
-        final value = widget.values[param.name] as bool? ?? param.defaultBool;
-        child = Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-          child: Row(
-            children: [
-              Expanded(child: Text(param.label, style: Theme.of(context).textTheme.titleMedium)),
-              _automationButton(param),
-              Switch(value: value, onChanged: (v) => _onParamToggleChanged(param, v)),
-            ],
+        if (_showParams) ...[
+          Text(
+            'Automations set here belong to this sequence only - they run while it runs, separate from '
+            'each parameter\'s own automation on the main screen.',
+            style: Theme.of(context).textTheme.bodySmall,
           ),
-        );
-      case ParamType.custom:
-        final controller = widget.customValueControllers[param.name];
-        child = Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          child: Row(
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(param.label, style: Theme.of(context).textTheme.titleMedium),
-                    Text('custom - type "${param.customTypeTag}"', style: Theme.of(context).textTheme.bodySmall),
+          const SizedBox(height: 8),
+          SearchBar(
+            controller: _paramSearchController,
+            hintText: 'Search parameters',
+            leading: const Icon(Icons.search),
+            elevation: const WidgetStatePropertyAll(0),
+            trailing: _paramSearchQuery.isEmpty
+                ? null
+                : [
+                    IconButton(
+                      icon: const Icon(Icons.clear),
+                      onPressed: () {
+                        _paramSearchController.clear();
+                        setState(() => _paramSearchQuery = '');
+                      },
+                    ),
                   ],
+            onChanged: (v) => setState(() => _paramSearchQuery = v),
+          ),
+          const SizedBox(height: 8),
+          if (params.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              child: Text('No parameters yet. Discover them from VRChat, or add one by hand.'),
+            )
+          else if (filtered.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              child: Text('No parameters match your search.'),
+            )
+          else
+            for (final p in filtered)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: ParamCard(
+                  key: ValueKey('seq-card:${p.name}'),
+                  param: p,
+                  live: live,
+                  dense: true,
+                  automationButton: p.type == ParamType.custom ? null : _automationButton(p),
+                  onMenu: (pos) => _showParamMenu(pos, p),
                 ),
               ),
-              SizedBox(
-                width: 140,
-                child: TextField(controller: controller, decoration: const InputDecoration(isDense: true)),
-              ),
-              IconButton(icon: const Icon(Icons.send), onPressed: () => _sendParamCustom(param)),
-            ],
-          ),
-        );
-      case ParamType.slider:
-        final value = widget.values[param.name] as double? ?? param.defaultValue;
-        final textController = widget.sliderTextControllers[param.name];
-        child = Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Expanded(child: Text(param.label, style: Theme.of(context).textTheme.titleMedium)),
-                  _automationButton(param),
-                  SizedBox(
-                    width: 90,
-                    child: TextField(
-                      controller: textController,
-                      textAlign: TextAlign.end,
-                      keyboardType: const TextInputType.numberWithOptions(signed: true, decimal: true),
-                      decoration: const InputDecoration(isDense: true),
-                      onSubmitted: (text) => _onParamSliderTextSubmitted(param, text),
-                    ),
-                  ),
-                ],
-              ),
-              Slider(
-                value: value.clamp(param.min, param.max),
-                min: param.min,
-                max: param.max,
-                onChanged: (v) => _onParamSliderChanged(param, v),
-              ),
-            ],
-          ),
-        );
-    }
-
-    return GestureDetector(
-      onSecondaryTapDown: (details) => _showParamContextMenu(context, details.globalPosition, param),
-      child: Card(margin: const EdgeInsets.symmetric(vertical: 8), child: child),
+        ],
+      ],
     );
   }
 
   @override
   Widget build(BuildContext context) {
+    // rebuilt on every live change, so the Running switch, the current-step
+    // highlight and the parameter panel all track what's actually happening.
+    return ListenableBuilder(
+      listenable: live,
+      builder: (context, _) => _buildPage(context),
+    );
+  }
+
+  Widget _buildPage(BuildContext context) {
+    final theme = Theme.of(context);
+    final currentStep = seq.enabled ? live.sequenceEngine.currentStep(seq) : null;
     return Scaffold(
-      appBar: AppBar(title: const Text('Edit Sequence')),
-      body: CustomScrollView(
-        slivers: [
-          SliverPadding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-            sliver: SliverToBoxAdapter(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  TextField(
-                    controller: _nameController,
-                    decoration: const InputDecoration(labelText: 'Name'),
-                    onSubmitted: _renameSequence,
-                    onTapOutside: (_) => _renameSequence(_nameController.text),
-                  ),
-                  const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      const Expanded(child: Text('Running')),
-                      Switch(value: seq.enabled, onChanged: _setEnabled),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  DropdownButtonFormField<SequenceRepeatMode>(
-                    initialValue: seq.repeatMode,
-                    decoration: const InputDecoration(labelText: 'Repeat'),
-                    items: const [
-                      DropdownMenuItem(value: SequenceRepeatMode.once, child: Text('Once through')),
-                      DropdownMenuItem(value: SequenceRepeatMode.loop, child: Text('Loop from step 1')),
-                    ],
-                    onChanged: (v) => _setRepeatMode(v ?? SequenceRepeatMode.once),
-                  ),
-                  if (seq.repeatMode == SequenceRepeatMode.loop) ...[
-                    const SizedBox(height: 8),
-                    TextField(
-                      controller: _repeatCountController,
-                      keyboardType: TextInputType.number,
-                      decoration: const InputDecoration(labelText: 'Repeat count (0 = forever)'),
-                      onSubmitted: _setRepeatCount,
-                      onTapOutside: (_) => _setRepeatCount(_repeatCountController.text),
-                    ),
-                  ],
-                  const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      const Expanded(child: Text('Triggered by another parameter')),
-                      Switch(value: _triggerEnabled, onChanged: _setTriggerEnabled),
-                    ],
-                  ),
-                  if (_triggerEnabled) ...[
-                    const SizedBox(height: 8),
-                    TriggerFields(
-                      eligibleParams: _eligibleParams,
-                      watchedParamName: _watchedParamName,
-                      toggleCondition: _toggleCondition,
-                      rangeCondition: _rangeCondition,
-                      thresholdController: _triggerThreshold,
-                      rangeMinController: _triggerRangeMin,
-                      rangeMaxController: _triggerRangeMax,
-                      requiredHitsController: _triggerRequiredHits,
-                      onWatchedParamChanged: _setWatchedParam,
-                      onToggleConditionChanged: _setToggleCondition,
-                      onRangeConditionChanged: _setRangeCondition,
-                      onThresholdChanged: _setTriggerThreshold,
-                      onRangeMinChanged: _setTriggerRangeMin,
-                      onRangeMaxChanged: _setTriggerRangeMax,
-                      onRequiredHitsChanged: _setTriggerRequiredHits,
-                    ),
-                  ],
-                  const SizedBox(height: 20),
-                  const Divider(),
-                  const SizedBox(height: 8),
-                  _buildParametersSection(context),
-                  const SizedBox(height: 20),
-                  const Divider(),
-                  const SizedBox(height: 8),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text('Steps', style: Theme.of(context).textTheme.titleLarge),
-                      TextButton.icon(onPressed: _addStep, icon: const Icon(Icons.add), label: const Text('Add step')),
-                    ],
-                  ),
-                ],
-              ),
+      appBar: AppBar(
+        title: Text(seq.name),
+        actions: [
+          Padding(
+            padding: const EdgeInsets.only(right: 12),
+            child: Row(
+              children: [
+                Text(seq.enabled ? 'Running' : 'Stopped'),
+                const SizedBox(width: 8),
+                Switch(value: seq.enabled, onChanged: (v) => _update(() => seq.enabled = v)),
+              ],
             ),
           ),
-          if (seq.steps.isEmpty)
-            const SliverToBoxAdapter(
-              child: Padding(
-                padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                child: Text('No steps yet - add one to start scripting this sequence.'),
-              ),
-            )
-          else
-            SliverPadding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              sliver: SliverReorderableList(
-                itemCount: seq.steps.length,
-                onReorderItem: _reorder,
-                itemBuilder: (context, index) {
-                  final step = seq.steps[index];
-                  final param =
-                      step.kind == SequenceStepKind.setValue ? _findEligible(step.paramName) : null;
-                  return GestureDetector(
-                    key: ValueKey(identityHashCode(step)),
-                    onSecondaryTapDown: (details) =>
-                        _showStepContextMenu(context, details.globalPosition, index),
-                    child: Card(
-                      margin: const EdgeInsets.symmetric(vertical: 4),
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 4),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            ListTile(
-                              leading: ReorderableDragStartListener(
-                                index: index,
-                                child: const Icon(Icons.drag_handle),
-                              ),
-                              title: Text(
-                                step.kind == SequenceStepKind.wait
-                                    ? '${index + 1}. Wait ${_fmt(step.durationSeconds)}s'
-                                    : '${index + 1}. ${_stepTitle(step)}',
-                              ),
-                              subtitle: step.kind == SequenceStepKind.setValue && param == null
-                                  ? const Text('Target parameter no longer exists')
-                                  : null,
-                              trailing: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  IconButton(icon: const Icon(Icons.edit), onPressed: () => _editStep(index)),
-                                  IconButton(
-                                    icon: const Icon(Icons.delete_outline),
-                                    onPressed: () => _deleteStep(index),
-                                  ),
-                                ],
+        ],
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: _addStep,
+        icon: const Icon(Icons.add),
+        label: const Text('Add step'),
+      ),
+      body: Align(
+        alignment: Alignment.topCenter,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 900),
+          child: CustomScrollView(
+            slivers: [
+              SliverPadding(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                sliver: SliverToBoxAdapter(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      TextField(
+                        controller: _nameController,
+                        decoration: const InputDecoration(labelText: 'Name'),
+                        onChanged: _renameSequence,
+                      ),
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: DropdownButtonFormField<SequenceRepeatMode>(
+                              initialValue: seq.repeatMode,
+                              decoration: const InputDecoration(labelText: 'Repeat'),
+                              items: const [
+                                DropdownMenuItem(value: SequenceRepeatMode.once, child: Text('Once through')),
+                                DropdownMenuItem(value: SequenceRepeatMode.loop, child: Text('Loop from step 1')),
+                              ],
+                              onChanged: (v) => _update(() => seq.repeatMode = v ?? SequenceRepeatMode.once),
+                            ),
+                          ),
+                          if (seq.repeatMode == SequenceRepeatMode.loop) ...[
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: TextField(
+                                controller: _repeatCountController,
+                                keyboardType: TextInputType.number,
+                                decoration: const InputDecoration(labelText: 'Repeat count (0 = forever)'),
+                                onSubmitted: _setRepeatCount,
+                                onTapOutside: (_) {
+                                  _setRepeatCount(_repeatCountController.text);
+                                  FocusManager.instance.primaryFocus?.unfocus();
+                                },
                               ),
                             ),
-                            if (param != null && param.type == ParamType.slider)
-                              Padding(
-                                padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
-                                child: Row(
-                                  children: [
-                                    Expanded(
-                                      child: Slider(
-                                        value: step.targetValue.clamp(param.min, param.max),
-                                        min: param.min,
-                                        max: param.max,
-                                        onChanged: (v) => _setStepTargetValue(index, v),
-                                      ),
-                                    ),
-                                    SizedBox(
-                                      width: 56,
-                                      child: Text(_fmt(step.targetValue), textAlign: TextAlign.end),
-                                    ),
-                                  ],
-                                ),
-                              )
-                            else if (param != null && param.type == ParamType.toggle)
-                              Padding(
-                                padding: const EdgeInsets.fromLTRB(16, 0, 8, 4),
-                                child: Row(
-                                  children: [
-                                    Text(step.targetBool ? 'On' : 'Off'),
-                                    const Spacer(),
-                                    Switch(
-                                      value: step.targetBool,
-                                      onChanged: (v) => _setStepTargetBool(index, v),
-                                    ),
-                                  ],
-                                ),
-                              ),
                           ],
-                        ),
+                        ],
                       ),
-                    ),
-                  );
-                },
+                      const SizedBox(height: 8),
+                      SwitchListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text('Triggered by another parameter'),
+                        value: _triggerEnabled,
+                        onChanged: (v) => _update(() => _trigger().enabled = v),
+                      ),
+                      if (_triggerEnabled) ...[
+                        TriggerFields(
+                          eligibleParams: _eligibleParams,
+                          watchedParamName: _watchedParamName,
+                          toggleCondition: _toggleCondition,
+                          rangeCondition: _rangeCondition,
+                          thresholdController: _triggerThreshold,
+                          rangeMinController: _triggerRangeMin,
+                          rangeMaxController: _triggerRangeMax,
+                          requiredHitsController: _triggerRequiredHits,
+                          onWatchedParamChanged: (name) => _update(() => _trigger().watchedParamName = name),
+                          onToggleConditionChanged: (c) => _update(() => _trigger().toggleCondition = c),
+                          onRangeConditionChanged: (c) => _update(() => _trigger().rangeCondition = c),
+                          onThresholdChanged: _setTriggerThreshold,
+                          onRangeMinChanged: _setTriggerRangeMin,
+                          onRangeMaxChanged: _setTriggerRangeMax,
+                          onRequiredHitsChanged: _setTriggerRequiredHits,
+                        ),
+                      ],
+                      const SizedBox(height: 16),
+                      Row(
+                        children: [
+                          Expanded(child: Text('Steps', style: theme.textTheme.titleLarge)),
+                          Text(
+                            seq.steps.isEmpty ? '' : '${seq.steps.length} steps  ·  drag to reorder',
+                            style: theme.textTheme.bodySmall,
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                    ],
+                  ),
+                ),
               ),
-            ),
-          const SliverPadding(padding: EdgeInsets.only(bottom: 24)),
-        ],
+              if (seq.steps.isEmpty)
+                const SliverToBoxAdapter(
+                  child: Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    child: Text('No steps yet - add one to start scripting this sequence.'),
+                  ),
+                )
+              else
+                SliverPadding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  sliver: SliverReorderableList(
+                    itemCount: seq.steps.length,
+                    onReorderItem: _reorder,
+                    itemBuilder: (context, index) => _buildStep(context, index, index == currentStep),
+                  ),
+                ),
+              SliverPadding(
+                padding: const EdgeInsets.fromLTRB(16, 24, 16, 96),
+                sliver: SliverToBoxAdapter(child: _buildParametersSection(context)),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildStep(BuildContext context, int index, bool current) {
+    final step = seq.steps[index];
+    final param = step.kind == SequenceStepKind.setValue ? _findEligible(step.paramName) : null;
+    final scheme = Theme.of(context).colorScheme;
+    return GestureDetector(
+      key: ObjectKey(step),
+      onSecondaryTapDown: (details) => _showStepContextMenu(context, details.globalPosition, index),
+      child: Card(
+        margin: const EdgeInsets.symmetric(vertical: 4),
+        color: current ? scheme.secondaryContainer : null,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              ListTile(
+                leading: ReorderableDragStartListener(
+                  index: index,
+                  child: Icon(current ? Icons.play_arrow : Icons.drag_handle, color: current ? scheme.primary : null),
+                ),
+                title: Text(
+                  step.kind == SequenceStepKind.wait
+                      ? '${index + 1}. Wait ${_fmt(step.durationSeconds)}s'
+                      : '${index + 1}. ${_stepTitle(step)}',
+                ),
+                subtitle: step.kind == SequenceStepKind.setValue && param == null
+                    ? Text('Target parameter "${step.paramName}" no longer exists - this step is skipped',
+                        style: TextStyle(color: scheme.error))
+                    : null,
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(icon: const Icon(Icons.edit_outlined), onPressed: () => _editStep(index)),
+                    IconButton(icon: const Icon(Icons.delete_outline), onPressed: () => _deleteStep(index)),
+                  ],
+                ),
+              ),
+              if (param != null && param.type == ParamType.slider)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Builder(builder: (context) {
+                          final (lo, hi) = param.safeRange;
+                          return Slider(
+                            value: step.targetValue.clamp(lo, hi),
+                            min: lo,
+                            max: hi,
+                            onChanged: (v) => setState(() => step.targetValue = v),
+                            onChangeEnd: (_) => live.persist(),
+                          );
+                        }),
+                      ),
+                      SizedBox(width: 56, child: Text(_fmt(step.targetValue), textAlign: TextAlign.end)),
+                    ],
+                  ),
+                )
+              else if (param != null && param.type == ParamType.toggle)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 8, 4),
+                  child: Row(
+                    children: [
+                      Text(step.targetBool ? 'On' : 'Off'),
+                      const Spacer(),
+                      Switch(value: step.targetBool, onChanged: (v) => _update(() => step.targetBool = v)),
+                    ],
+                  ),
+                ),
+            ],
+          ),
+        ),
       ),
     );
   }
 }
 
-extension _FirstOrNull<T> on Iterable<T> {
-  T? get firstOrNull => isEmpty ? null : first;
-}
-
 Future<SequenceStep?> _showStepDialog(
   BuildContext context,
   SequenceStep? existing,
-  List<ParamControl> eligibleParams,
-) {
+  List<ParamControl> eligibleParams, {
+  bool isNew = false,
+}) {
   return showDialog<SequenceStep>(
     context: context,
-    builder: (context) => _StepDialog(existing: existing, eligibleParams: eligibleParams),
+    builder: (context) => _StepDialog(existing: existing, eligibleParams: eligibleParams, isNew: isNew),
   );
 }
 
 class _StepDialog extends StatefulWidget {
   final SequenceStep? existing;
   final List<ParamControl> eligibleParams;
-  const _StepDialog({required this.existing, required this.eligibleParams});
+  final bool isNew;
+  const _StepDialog({required this.existing, required this.eligibleParams, this.isNew = false});
 
   @override
   State<_StepDialog> createState() => _StepDialogState();
@@ -880,10 +681,11 @@ class _StepDialog extends StatefulWidget {
 
 class _StepDialogState extends State<_StepDialog> {
   late SequenceStepKind _kind;
-  late String _paramName;
+  late String? _paramName;
   late final TextEditingController _targetValue;
   late bool _targetBool;
   late final TextEditingController _duration;
+  String? _error;
 
   ParamControl? get _param => widget.eligibleParams.where((p) => p.name == _paramName).firstOrNull;
 
@@ -891,9 +693,13 @@ class _StepDialogState extends State<_StepDialog> {
   void initState() {
     super.initState();
     final e = widget.existing;
-    _kind = e?.kind ?? SequenceStepKind.setValue;
-    _paramName = e?.paramName ?? widget.eligibleParams.first.name;
-    _targetValue = TextEditingController(text: _fmt(e?.targetValue ?? widget.eligibleParams.first.max));
+    final params = widget.eligibleParams;
+    // nothing to target yet - a wait step is still possible.
+    _kind = params.isEmpty ? SequenceStepKind.wait : (e?.kind ?? SequenceStepKind.setValue);
+    // a wait step (empty name) or a step whose target was deleted would
+    // otherwise hand the dropdown a value it has no item for, which throws.
+    _paramName = params.any((p) => p.name == e?.paramName) ? e!.paramName : params.firstOrNull?.name;
+    _targetValue = TextEditingController(text: _fmt(e?.targetValue ?? _param?.max ?? 1.0));
     _targetBool = e?.targetBool ?? true;
     _duration = TextEditingController(text: _fmt(e?.durationSeconds ?? 1.0));
   }
@@ -909,20 +715,37 @@ class _StepDialogState extends State<_StepDialog> {
 
   void _save() {
     final param = _param;
+    final duration = parseUserDouble(_duration.text);
+    final target = parseUserDouble(_targetValue.text);
+    String? error;
+    if (duration == null || duration < 0) {
+      error = 'Duration must be a number, 0 or more';
+    } else if (_kind == SequenceStepKind.setValue && param == null) {
+      error = 'Pick a parameter';
+    } else if (_kind == SequenceStepKind.setValue &&
+        param!.type == ParamType.slider &&
+        target == null) {
+      error = 'Target value must be a number';
+    }
+    if (error != null) {
+      setState(() => _error = error);
+      return;
+    }
     Navigator.of(context).pop(SequenceStep(
       kind: _kind,
-      paramName: _kind == SequenceStepKind.setValue ? _paramName : '',
-      targetValue: double.tryParse(_targetValue.text) ?? param?.max ?? 1.0,
+      paramName: _kind == SequenceStepKind.setValue ? param!.name : '',
+      targetValue: target ?? param?.max ?? 1.0,
       targetBool: _targetBool,
-      durationSeconds: (double.tryParse(_duration.text) ?? 1.0).abs(),
+      durationSeconds: duration!,
     ));
   }
 
   @override
   Widget build(BuildContext context) {
     final param = _param;
+    final hasParams = widget.eligibleParams.isNotEmpty;
     return AlertDialog(
-      title: Text(widget.existing == null ? 'Add Step' : 'Edit Step'),
+      title: Text(widget.existing == null || widget.isNew ? 'Add Step' : 'Edit Step'),
       content: SizedBox(
         width: 380,
         child: Column(
@@ -932,9 +755,13 @@ class _StepDialogState extends State<_StepDialog> {
             DropdownButtonFormField<SequenceStepKind>(
               initialValue: _kind,
               decoration: const InputDecoration(labelText: 'Step type'),
-              items: const [
-                DropdownMenuItem(value: SequenceStepKind.setValue, child: Text('Set a parameter\'s value')),
-                DropdownMenuItem(value: SequenceStepKind.wait, child: Text('Wait')),
+              items: [
+                DropdownMenuItem(
+                  value: SequenceStepKind.setValue,
+                  enabled: hasParams,
+                  child: Text(hasParams ? 'Set a parameter\'s value' : 'Set a value (add a parameter first)'),
+                ),
+                const DropdownMenuItem(value: SequenceStepKind.wait, child: Text('Wait')),
               ],
               onChanged: (v) => setState(() => _kind = v ?? _kind),
             ),
@@ -942,9 +769,11 @@ class _StepDialogState extends State<_StepDialog> {
               const SizedBox(height: 8),
               DropdownButtonFormField<String>(
                 initialValue: _paramName,
+                isExpanded: true,
                 decoration: const InputDecoration(labelText: 'Parameter'),
                 items: [
-                  for (final p in widget.eligibleParams) DropdownMenuItem(value: p.name, child: Text(p.label)),
+                  for (final p in widget.eligibleParams)
+                    DropdownMenuItem(value: p.name, child: Text(p.label, overflow: TextOverflow.ellipsis)),
                 ],
                 onChanged: (v) => setState(() => _paramName = v ?? _paramName),
               ),
@@ -961,7 +790,10 @@ class _StepDialogState extends State<_StepDialog> {
                 TextField(
                   controller: _targetValue,
                   keyboardType: const TextInputType.numberWithOptions(signed: true, decimal: true),
-                  decoration: const InputDecoration(labelText: 'Target value'),
+                  decoration: InputDecoration(
+                    labelText: 'Target value',
+                    helperText: param == null ? null : 'Slider range ${_fmt(param.min)} to ${_fmt(param.max)}',
+                  ),
                 ),
               const SizedBox(height: 8),
               TextField(
@@ -971,7 +803,7 @@ class _StepDialogState extends State<_StepDialog> {
                   labelText: param?.type == ParamType.toggle ? 'Hold for (seconds)' : 'Glide over (seconds)',
                   helperText: param?.type == ParamType.toggle
                       ? 'Toggles snap instantly, then this step holds before advancing'
-                      : '0 = snap instantly',
+                      : '0 = snap instantly (and run the next step right away)',
                 ),
               ),
             ] else ...[
@@ -981,6 +813,10 @@ class _StepDialogState extends State<_StepDialog> {
                 keyboardType: const TextInputType.numberWithOptions(decimal: true),
                 decoration: const InputDecoration(labelText: 'Duration (seconds)'),
               ),
+            ],
+            if (_error != null) ...[
+              const SizedBox(height: 8),
+              Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
             ],
           ],
         ),

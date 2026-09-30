@@ -7,6 +7,9 @@ import 'theme_notifier.dart';
 Future<void> showCustomThemeDialog(BuildContext context, AppConfig config) {
   return showDialog(
     context: context,
+    // tapping outside used to keep the live-previewed colors as if Done had
+    // been pressed - only the buttons close it now.
+    barrierDismissible: false,
     builder: (context) => CustomThemeDialog(config: config),
   );
 }
@@ -71,19 +74,36 @@ class _CustomThemeDialogState extends State<CustomThemeDialog> {
     themeSettingsNotifier.value = ThemeSettings.fromConfig(config);
   }
 
+  bool _closing = false;
+
   void _cancel() {
+    if (_closing) return;
+    _closing = true;
     config.themeSeedColor = _snapshot.themeSeedColor;
     config.primaryOverride = _snapshot.primaryOverride;
     config.secondaryOverride = _snapshot.secondaryOverride;
     config.tertiaryOverride = _snapshot.tertiaryOverride;
     config.errorOverride = _snapshot.errorOverride;
     themeSettingsNotifier.value = ThemeSettings.fromConfig(config);
-    Navigator.of(context).pop();
+    _pop();
+  }
+
+  // canPop is false (so Esc routes through _cancel), which means a plain
+  // pop() would be refused - go through the navigator's forced removal.
+  void _pop() {
+    final route = ModalRoute.of(context);
+    if (route != null) Navigator.of(context).removeRoute(route);
   }
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
+    return PopScope(
+      canPop: false,
+      // Esc/back behaves like Cancel.
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _cancel();
+      },
+      child: AlertDialog(
       title: const Text('Custom Theme'),
       content: SizedBox(
         width: 420,
@@ -109,12 +129,14 @@ class _CustomThemeDialogState extends State<CustomThemeDialog> {
         TextButton(onPressed: _cancel, child: const Text('Cancel')),
         FilledButton(
           onPressed: () {
+            _closing = true;
             _applyLive();
-            Navigator.of(context).pop();
+            _pop();
           },
           child: const Text('Done'),
         ),
       ],
+    ),
     );
   }
 

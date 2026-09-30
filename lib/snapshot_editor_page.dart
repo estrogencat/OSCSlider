@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 
+import 'discovery_flow.dart';
 import 'discovery_sheet.dart';
 import 'error_dialog.dart';
-import 'oscquery_client.dart';
 import 'param_control.dart';
 import 'param_form_dialog.dart';
 
@@ -12,23 +12,15 @@ import 'param_form_dialog.dart';
 /// there's no live OSC value to drag here, just membership.
 class SnapshotEditorPage extends StatefulWidget {
   final Profile snapshot;
-  final bool developerMode;
-  // the active profile's configured OSC port - only needed for the discover
-  // popup's "highlight active parameters" listener, which taps port+1.
-  final int oscPort;
-  // Settings > Miscellaneous - see LiveParamTracker.noiseThreshold.
-  final int liveParamNoiseThreshold;
-  // Settings > Miscellaneous (developer mode only).
-  final int oscQueryFetchTimeoutSeconds;
+  // only read for discovery/fetch settings (developer mode, timeouts,
+  // noise filter) - the snapshot itself is what gets edited.
+  final AppConfig config;
   final VoidCallback onPersist;
 
   const SnapshotEditorPage({
     super.key,
     required this.snapshot,
-    required this.developerMode,
-    required this.oscPort,
-    required this.liveParamNoiseThreshold,
-    required this.oscQueryFetchTimeoutSeconds,
+    required this.config,
     required this.onPersist,
   });
 
@@ -41,10 +33,6 @@ class _SnapshotEditorPageState extends State<SnapshotEditorPage> {
   final _searchController = TextEditingController();
   String _searchQuery = '';
   bool _discovering = false;
-  // developer-mode-only escape hatch: a second Discover click within 1s of a
-  // "nothing found" failure opens the add menu anyway, empty - same shortcut
-  // as the main screen's discover icon.
-  DateTime? _lastDiscoverFailure;
 
   Profile get snapshot => widget.snapshot;
 
@@ -69,24 +57,23 @@ class _SnapshotEditorPageState extends State<SnapshotEditorPage> {
   }
 
   Future<void> _deleteParam(ParamControl param) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Remove parameter?'),
-        content: Text('Remove "${param.label}" from this snapshot?'),
-        actions: [
-          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.of(context).pop(true), child: const Text('Remove')),
-        ],
-      ),
+    final ok = await confirmDialog(
+      context,
+      title: 'Remove parameter?',
+      message: 'Remove "${param.label}" from this snapshot?',
+      confirmLabel: 'Remove',
     );
-    if (confirmed != true) return;
+    if (!ok) return;
     setState(() => snapshot.parameters.remove(param));
     widget.onPersist();
   }
 
   Future<void> _editParam(ParamControl param) async {
-    final result = await showParamFormDialog(context, existing: param);
+    final result = await showParamFormDialog(
+      context,
+      existing: param,
+      takenNames: {for (final p in snapshot.parameters) p.name},
+    );
     if (result == null) return;
     final index = snapshot.parameters.indexOf(param);
     if (index == -1) return;
@@ -99,36 +86,17 @@ class _SnapshotEditorPageState extends State<SnapshotEditorPage> {
   // "Save Parameters" flow. read-only against OSC, nothing is sent.
   Future<void> _fetchValue(ParamControl param) async {
     final messenger = ScaffoldMessenger.of(context);
-    final result = await OscQueryClient.findVrchatInstances(anyOscQueryService: widget.developerMode);
-    if (!mounted) return;
-    if (result.instances.isEmpty) {
-      await showErrorDialog(context, 'No OSCQuery service found', result.error ?? oscNotFoundExplanation);
-      return;
-    }
-    final (host, port) = result.instances.first;
-    final Object? value;
-    try {
-      value = await OscQueryClient.fetchParameterValue(host, port, param.name);
-    } catch (e) {
-      if (!mounted) return;
-      await showErrorDialog(context, 'Could not fetch "${param.label}"', e.toString());
-      return;
-    }
-    if (!mounted) return;
-    if (value == null) {
-      await showErrorDialog(
-        context,
-        'Parameter not found',
-        'Could not find "${param.label}" on the avatar - it may not exist under that name.',
-      );
-      return;
-    }
+    final value = await fetchLiveValue(
+      context,
+      param,
+      developerMode: widget.config.developerMode,
+      timeout: Duration(seconds: widget.config.oscQueryFetchTimeoutSeconds),
+    );
+    if (value == null || !mounted) return;
     if (param.type == ParamType.toggle && value is bool) {
-      final boolValue = value;
-      setState(() => param.defaultBool = boolValue);
+      setState(() => param.defaultBool = value);
     } else if (param.type == ParamType.slider && value is double) {
-      final doubleValue = value;
-      setState(() => param.defaultValue = doubleValue);
+      setState(() => param.defaultValue = value);
     } else {
       messenger.showSnackBar(SnackBar(content: Text('"${param.label}" is a different type on the avatar - not applied.')));
       return;
@@ -175,72 +143,29 @@ class _SnapshotEditorPageState extends State<SnapshotEditorPage> {
 
   String _fmt(double v) => v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toStringAsFixed(2);
 
-  Future<void> _openDiscoverySheet(
-    List<DiscoveredParam> found, {
-    bool fetchFailed = false,
-    String? failureDetail,
-  }) async {
-    await showDiscoveryResultsSheet(
-      context,
-      found: found,
-      autoStartLive: fetchFailed,
-      fetchFailed: fetchFailed,
-      failureDetail: failureDetail,
-      developerMode: widget.developerMode,
-      avatarChangeListenPort: widget.oscPort + 1,
-      noiseThreshold: widget.liveParamNoiseThreshold,
-      existingNames: snapshot.parameters.map((p) => p.name).toSet(),
-      onAdd: (control) {
-        setState(() => snapshot.parameters.add(control));
-        widget.onPersist();
-      },
-    );
-  }
-
   Future<void> _discover() async {
-    final devMode = widget.developerMode;
-    if (devMode &&
-        _lastDiscoverFailure != null &&
-        DateTime.now().difference(_lastDiscoverFailure!) <= const Duration(seconds: 1)) {
-      _lastDiscoverFailure = null;
-      await _openDiscoverySheet(const []);
-      return;
-    }
-
     setState(() => _discovering = true);
     try {
-      final fetchTimeout = Duration(seconds: widget.oscQueryFetchTimeoutSeconds);
-      final result = await OscQueryClient.findVrchatInstances(anyOscQueryService: devMode, timeout: fetchTimeout);
+      final result = await loadDiscovery(
+        developerMode: widget.config.developerMode,
+        timeout: Duration(seconds: widget.config.oscQueryFetchTimeoutSeconds),
+      );
       if (!mounted) return;
-      if (result.instances.isEmpty) {
-        _lastDiscoverFailure = devMode ? DateTime.now() : null;
-        await showErrorDialog(
-          context,
-          'No OSCQuery service found',
-          (result.error ?? oscNotFoundExplanation) +
-              (devMode ? '\n\nClick Discover again within 1s to bring up the add menu anyway (developer mode).' : ''),
-        );
-        return;
-      }
-      final (host, port) = result.instances.first;
-      List<DiscoveredParam> found;
-      var fetchFailed = false;
-      String? failureDetail;
-      try {
-        found = await OscQueryClient.fetchAvatarParameters(host, port, perAttemptTimeout: fetchTimeout);
-      } catch (e) {
-        // some avatars' full parameter tree makes VRChat's own OSCQuery HTTP
-        // server hang outright - fall back to building the list from live
-        // outgoing OSC traffic instead of blocking the whole feature on it.
-        found = const [];
-        fetchFailed = true;
-        failureDetail = e.toString();
-      }
-      if (!mounted) return;
-      await _openDiscoverySheet(found, fetchFailed: fetchFailed, failureDetail: failureDetail);
+      setState(() => _discovering = false);
+      await showDiscoveryResultsSheet(
+        context,
+        result: result,
+        noiseThreshold: widget.config.liveParamNoiseThreshold,
+        existingNames: {for (final p in snapshot.parameters) p.name},
+        onAdd: (control) {
+          if (snapshot.parameters.any((p) => p.name == control.name)) return false;
+          setState(() => snapshot.parameters.add(control));
+          widget.onPersist();
+          return true;
+        },
+      );
     } catch (e) {
-      if (!mounted) return;
-      await showErrorDialog(context, 'Discovery failed', e.toString());
+      if (mounted) await showErrorDialog(context, 'Discovery failed', e.toString());
     } finally {
       if (mounted) setState(() => _discovering = false);
     }
@@ -261,8 +186,7 @@ class _SnapshotEditorPageState extends State<SnapshotEditorPage> {
           TextField(
             controller: _nameController,
             decoration: const InputDecoration(labelText: 'Name'),
-            onSubmitted: _renameSnapshot,
-            onTapOutside: (_) => _renameSnapshot(_nameController.text),
+            onChanged: _renameSnapshot,
           ),
           const SizedBox(height: 20),
           Row(
@@ -338,9 +262,9 @@ class _SnapshotEditorPageState extends State<SnapshotEditorPage> {
                               children: [
                                 Expanded(
                                   child: Slider(
-                                    value: p.defaultValue.clamp(p.min, p.max),
-                                    min: p.min,
-                                    max: p.max,
+                                    value: p.defaultValue.clamp(p.safeRange.$1, p.safeRange.$2),
+                                    min: p.safeRange.$1,
+                                    max: p.safeRange.$2,
                                     onChanged: (v) => _setParamValue(p, v),
                                     onChangeEnd: (_) => widget.onPersist(),
                                   ),

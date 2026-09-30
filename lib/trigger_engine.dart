@@ -70,8 +70,8 @@ class TriggerEngine {
     final state = _runtime.putIfAbsent(key, () => _TriggerRuntimeState());
 
     if (watched.type == ParamType.toggle) {
-      final value = currentValues[watched.name] as bool? ?? watched.defaultBool;
-      final previous = state.previousValue as bool?;
+      final value = toggleValueOf(currentValues, watched);
+      final previous = state.previousValue is bool ? state.previousValue as bool : null;
       state.previousValue = value;
       switch (trig.toggleCondition) {
         case ToggleTriggerCondition.whileOn:
@@ -84,8 +84,8 @@ class TriggerEngine {
           if (previous == true && !value) _pulse(state, trig, setEnabled);
       }
     } else if (watched.type == ParamType.slider) {
-      final value = currentValues[watched.name] as double? ?? watched.defaultValue;
-      final previous = state.previousValue as double?;
+      final value = sliderValueOf(currentValues, watched);
+      final previous = state.previousValue is double ? state.previousValue as double : null;
       state.previousValue = value;
       final isAbove = value > trig.threshold;
       final isBelow = value < trig.threshold;

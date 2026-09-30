@@ -1,3 +1,5 @@
+import 'dart:collection';
+
 import 'package:flutter/material.dart';
 
 import 'curve_editor_dialog.dart';
@@ -147,7 +149,8 @@ class _AutomationDialogState extends State<AutomationDialog> {
         ScheduleKind.countdown => _UnifiedKind.countdown,
       };
     } else {
-      _enabled = false;
+      // a brand-new automation is being set up to run - start it switched on.
+      _enabled = true;
       _kind = _isSlider ? _UnifiedKind.ramp : _UnifiedKind.blink;
     }
 
@@ -192,8 +195,12 @@ class _AutomationDialogState extends State<AutomationDialog> {
     _triggerRangeMax = TextEditingController(text: _fmt(trigger?.rangeMax ?? 0.75));
     _triggerRequiredHits = TextEditingController(text: '${trigger?.requiredHits ?? 1}');
     _startDelaySeconds = TextEditingController(text: _fmt(auto?.startDelaySeconds ?? 0.0));
-    if (_watchedParamName == null && _eligibleWatchParams.isNotEmpty) {
-      _watchedParamName = _eligibleWatchParams.first.name;
+    // a watched parameter that's since been deleted/renamed - the picker
+    // falls back to showing the first eligible one, so store that too
+    // instead of silently saving a trigger that watches nothing.
+    final eligible = _eligibleWatchParams;
+    if (eligible.isNotEmpty && !eligible.any((p) => p.name == _watchedParamName)) {
+      _watchedParamName = eligible.first.name;
     }
   }
 
@@ -227,7 +234,9 @@ class _AutomationDialogState extends State<AutomationDialog> {
     super.dispose();
   }
 
-  double _num(TextEditingController c, double fallback) => double.tryParse(c.text) ?? fallback;
+  double _num(TextEditingController c, double fallback) {
+    return parseUserDouble(c.text) ?? fallback;
+  }
 
   double _positive(TextEditingController c, double fallback) {
     final v = _num(c, fallback).abs();
@@ -318,7 +327,8 @@ class _AutomationDialogState extends State<AutomationDialog> {
       );
       widget.param.automation = null;
     } else {
-      widget.param.automation = _buildAutomation(
+      final isNew = widget.param.automation == null;
+      final automation = _buildAutomation(
         _watchedParamName == null
             ? null
             : ParamTrigger(
@@ -332,9 +342,21 @@ class _AutomationDialogState extends State<AutomationDialog> {
                 requiredHits: _clampInt(_triggerRequiredHits, 1, 1, 999999),
               ),
       );
+      // a new automation that waits for a "fires once" trigger shouldn't
+      // also start running the moment it's saved.
+      if (isNew && _triggerEnabled && _isPulseTrigger()) automation.enabled = false;
+      widget.param.automation = automation;
       widget.param.schedule = null;
     }
     Navigator.of(context).pop(true);
+  }
+
+  bool _isPulseTrigger() {
+    final watched = _eligibleWatchParams.where((p) => p.name == _watchedParamName).firstOrNull;
+    if (watched == null) return false;
+    return watched.type == ParamType.toggle
+        ? _toggleCondition == ToggleTriggerCondition.turnsOn || _toggleCondition == ToggleTriggerCondition.turnsOff
+        : _rangeCondition == RangeTriggerCondition.crossesAbove || _rangeCondition == RangeTriggerCondition.crossesBelow;
   }
 
   void _remove() {

@@ -21,6 +21,11 @@ class _RuntimeState {
   DateTime? cycleStart;
   int cycleIndex = 0;
 
+  // a run that reached its end (repeat count used up) and has no
+  // onFinished to switch it off - holds its final value until its target
+  // disappears (e.g. the owning sequence stops) and a fresh run begins.
+  bool finished = false;
+
   _RuntimeState(this.startTime);
 }
 
@@ -31,6 +36,9 @@ class AutomationTarget {
   final String key;
   final ParamControl param;
   final Automation automation;
+  // null = just hold the final value once finished (sequence-scoped
+  // automations - their enabled flag is the user's pause switch, and
+  // flipping it off would leave them paused the next time the sequence runs).
   final void Function()? onFinished;
   const AutomationTarget({
     required this.key,
@@ -66,6 +74,7 @@ class AutomationEngine {
       final auto = target.automation;
       liveKeys.add(target.key);
       final state = _runtime.putIfAbsent(target.key, () => _RuntimeState(now));
+      if (state.finished) continue;
 
       // startDelaySeconds holds the clock at the start line until it passes,
       // then shifts "now" so every tick method below (which works purely off
@@ -155,7 +164,10 @@ class AutomationEngine {
     final eased = _ease(auto.easing, progress.clamp(0.0, 1.0), auto);
     onSlider(param, auto.rampFrom + (auto.rampTo - auto.rampFrom) * eased);
 
-    if (finished) target.onFinished?.call();
+    if (finished) {
+      state.finished = true;
+      target.onFinished?.call();
+    }
   }
 
   // each repeat's duration is scaled by rampRepeatSpeedFactor from the last

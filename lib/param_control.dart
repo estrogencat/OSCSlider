@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:flutter/material.dart';
 
 enum ParamType { slider, toggle, custom }
@@ -112,9 +114,7 @@ class Automation {
         'custom' => EasingKind.custom,
         _ => EasingKind.easeInOut,
       },
-      customCurvePoints: (json['customCurvePoints'] as List?)
-          ?.map((e) => Offset((e[0] as num).toDouble(), (e[1] as num).toDouble()))
-          .toList(),
+      customCurvePoints: _parseCurvePoints(json['customCurvePoints']),
       customCurveSmooth: (json['customCurveSmooth'] as bool?) ?? false,
       customCurveYMin: (json['customCurveYMin'] as num?)?.toDouble() ?? -0.3,
       customCurveYMax: (json['customCurveYMax'] as num?)?.toDouble() ?? 1.3,
@@ -390,7 +390,7 @@ class ParamControl {
   });
 
   factory ParamControl.fromJson(Map<String, dynamic> json) {
-    final name = json['name'] as String;
+    final name = '${json['name'] ?? ''}';
     final typeStr = json['type'] as String?;
     final type = switch (typeStr) {
       'toggle' => ParamType.toggle,
@@ -438,6 +438,19 @@ class ParamControl {
       'default': type == ParamType.toggle ? defaultBool : defaultValue,
     };
   }
+
+  /// a fully independent deep copy (automation curves etc. included).
+  ParamControl copy() => ParamControl.fromJson(toJson());
+
+  /// the slider's range, safe to hand to a Slider widget - a hand-edited
+  /// config with min >= max (or NaN) would otherwise throw during layout.
+  (double, double) get safeRange {
+    final lo = min.isFinite ? min : 0.0;
+    final hi = max.isFinite ? max : 1.0;
+    if (hi > lo) return (lo, hi);
+    if (hi < lo) return (hi, lo);
+    return (lo, lo + 1);
+  }
 }
 
 // the seed color the app launches with before any config/preference is loaded.
@@ -447,11 +460,83 @@ const defaultThemeSeedColor = Color(0xFF6750A4);
 // precision. either way this only affects the textbox display - the value
 // actually stored/sent over OSC always keeps full precision.
 String formatParamNumber(double v, bool advanced) {
+  if (!v.isFinite) return v.toString();
   if (advanced) {
     if (v == v.roundToDouble()) return v.toStringAsFixed(0);
     return v.toString();
   }
   return v.toStringAsFixed(3);
+}
+
+/// like [formatParamNumber], but int parameters show as whole numbers -
+/// that's what actually gets sent for them.
+String formatParamValue(ParamControl param, double v, bool advanced) {
+  if (param.type == ParamType.slider && param.numericKind == NumericKind.int && v.isFinite) {
+    return v.round().toString();
+  }
+  return formatParamNumber(v, advanced);
+}
+
+/// the live value map holds a double for sliders and a bool for toggles,
+/// but a parameter's type can change underneath it (edited, or a config
+/// reload) - these never throw on a stale entry of the wrong type.
+double sliderValueOf(Map<String, Object> values, ParamControl param) {
+  final v = values[param.name];
+  if (v is double && v.isFinite) return v;
+  if (v is num && v.isFinite) return v.toDouble();
+  return param.defaultValue;
+}
+
+bool toggleValueOf(Map<String, Object> values, ParamControl param) {
+  final v = values[param.name];
+  return v is bool ? v : param.defaultBool;
+}
+
+/// unique enough for profile/sequence ids - a bare millisecond timestamp
+/// could collide when two get created in the same instant.
+String newId() {
+  final rand = Random();
+  return '${DateTime.now().millisecondsSinceEpoch}-${rand.nextInt(1 << 30).toRadixString(36)}';
+}
+
+List<Offset>? _parseCurvePoints(Object? raw) {
+  if (raw is! List) return null;
+  final points = <Offset>[];
+  for (final e in raw) {
+    if (e is List && e.length >= 2 && e[0] is num && e[1] is num) {
+      points.add(Offset((e[0] as num).toDouble(), (e[1] as num).toDouble()));
+    }
+  }
+  return points.length >= 2 ? points : null;
+}
+
+/// a number typed by a person - trims, accepts a decimal comma ("0,5"), and
+/// rejects NaN/Infinity (which double.tryParse happily accepts).
+double? parseUserDouble(String text) {
+  final v = double.tryParse(text.trim().replaceAll(',', '.'));
+  return v != null && v.isFinite ? v : null;
+}
+
+/// typing the full "/avatar/parameters/Foo" is the same parameter as "Foo" -
+/// normalized so both spellings match discovery, triggers and live sync.
+String normalizeParamName(String raw) {
+  final trimmed = raw.trim();
+  const root = '/avatar/parameters/';
+  if (trimmed.startsWith(root) && trimmed.length > root.length) return trimmed.substring(root.length);
+  return trimmed;
+}
+
+/// null if [name] is usable as a parameter name / OSC address, otherwise
+/// why not.
+String? validateParamName(String name) {
+  if (name.isEmpty) return 'Enter an OSC address';
+  if (name == '/') return 'That\'s not a full address';
+  if (name.endsWith('/')) return 'An address can\'t end with "/"';
+  if (name.contains('//')) return 'An address can\'t contain an empty "//" segment';
+  if (RegExp(r'[#*,?\[\]{}]').hasMatch(name)) {
+    return 'OSC addresses can\'t contain any of # * , ? [ ] { }';
+  }
+  return null;
 }
 
 // most parameter names are a bare suffix under VRChat's avatar-parameters
@@ -542,17 +627,19 @@ class AutomationSequence {
     final rawSteps = (json['steps'] as List?) ?? const [];
     final rawParamAutomations = json['paramAutomations'] as Map<String, dynamic>?;
     return AutomationSequence(
-      id: json['id'] as String,
+      id: (json['id'] as String?) ?? newId(),
       name: (json['name'] as String?) ?? 'Sequence',
       enabled: (json['enabled'] as bool?) ?? false,
       repeatMode: (json['repeatMode'] as String?) == 'loop' ? SequenceRepeatMode.loop : SequenceRepeatMode.once,
       repeatCount: (json['repeatCount'] as num?)?.toInt() ?? 0,
-      steps: rawSteps.cast<Map<String, dynamic>>().map(SequenceStep.fromJson).toList(),
+      steps: rawSteps.whereType<Map<String, dynamic>>().map(SequenceStep.fromJson).toList(),
       trigger: (json['trigger'] as Map<String, dynamic>?) == null
           ? null
           : ParamTrigger.fromJson(json['trigger'] as Map<String, dynamic>),
-      paramAutomations:
-          rawParamAutomations?.map((k, v) => MapEntry(k, Automation.fromJson(v as Map<String, dynamic>))),
+      paramAutomations: {
+        for (final entry in (rawParamAutomations ?? const <String, dynamic>{}).entries)
+          if (entry.value is Map<String, dynamic>) entry.key: Automation.fromJson(entry.value as Map<String, dynamic>),
+      },
     );
   }
 
@@ -613,11 +700,15 @@ class Profile {
     final rawParams = (json['parameters'] as List?) ?? const [];
     final rawSequences = (json['sequences'] as List?) ?? const [];
     return Profile(
-      id: json['id'] as String,
+      id: (json['id'] as String?) ?? newId(),
       name: (json['name'] as String?) ?? 'Profile',
       avatarId: json['avatarId'] as String?,
-      parameters: rawParams.cast<Map<String, dynamic>>().map(ParamControl.fromJson).toList(),
-      sequences: rawSequences.cast<Map<String, dynamic>>().map(AutomationSequence.fromJson).toList(),
+      parameters: rawParams
+          .whereType<Map<String, dynamic>>()
+          .map(ParamControl.fromJson)
+          .where((p) => p.name.isNotEmpty)
+          .toList(),
+      sequences: rawSequences.whereType<Map<String, dynamic>>().map(AutomationSequence.fromJson).toList(),
       isSnapshot: (json['isSnapshot'] as bool?) ?? false,
     );
   }
@@ -631,6 +722,32 @@ class Profile {
       'sequences': sequences.map((s) => s.toJson()).toList(),
       if (isSnapshot) 'isSnapshot': true,
     };
+  }
+
+  ParamControl? param(String name) {
+    for (final p in parameters) {
+      if (p.name == name) return p;
+    }
+    return null;
+  }
+
+  /// follows a parameter rename through everything in this profile that
+  /// refers to it by name - sequence steps, per-sequence automations, and
+  /// triggers - instead of silently orphaning them.
+  void renameParamReferences(String oldName, String newName) {
+    if (oldName == newName) return;
+    for (final p in parameters) {
+      final trig = p.automation?.trigger;
+      if (trig != null && trig.watchedParamName == oldName) trig.watchedParamName = newName;
+    }
+    for (final seq in sequences) {
+      for (final step in seq.steps) {
+        if (step.paramName == oldName) step.paramName = newName;
+      }
+      final auto = seq.paramAutomations.remove(oldName);
+      if (auto != null) seq.paramAutomations[newName] = auto;
+      if (seq.trigger?.watchedParamName == oldName) seq.trigger!.watchedParamName = newName;
+    }
   }
 }
 
@@ -661,6 +778,11 @@ class AppConfig {
   // second - keeps constantly-firing animator/tracking params from
   // permanently burying anything else. Settings > Miscellaneous.
   int liveParamNoiseThreshold;
+
+  // mirror parameter changes VRChat reports (radial menu, contacts,
+  // physbones...) onto the dashboard, so it shows what the avatar is really
+  // doing and triggers can react to in-game changes.
+  bool syncFromVrchat;
 
   // how long to wait on VRChat's OSCQuery server before falling back to
   // something else - it's been observed to hang outright for some avatars.
@@ -696,6 +818,7 @@ class AppConfig {
     this.automationMasterSwitchAll = true,
     List<String>? automationMasterSwitchParams,
     this.liveParamNoiseThreshold = 10,
+    this.syncFromVrchat = true,
     this.oscQueryFetchTimeoutSeconds = 5,
     this.primaryOverride,
     this.secondaryOverride,
@@ -704,12 +827,38 @@ class AppConfig {
   })  : profiles = profiles ?? [Profile(id: 'default', name: 'Default', parameters: parameters ?? [])],
         activeProfileId = activeProfileId ??
             (profiles != null && profiles.isNotEmpty ? profiles.first.id : 'default'),
-        automationMasterSwitchParams = automationMasterSwitchParams ?? [];
+        automationMasterSwitchParams = automationMasterSwitchParams ?? [] {
+    sanitize();
+  }
+
+  /// keeps the invariants the rest of the app relies on: at least one
+  /// regular (non-snapshot) profile, the active id pointing at one, and no
+  /// two profiles sharing an id. cheap - call after any bulk change.
+  void sanitize() {
+    if (!profiles.any((p) => !p.isSnapshot)) {
+      profiles.insert(0, Profile(id: newId(), name: 'Default'));
+    }
+    final seen = <String>{};
+    for (final p in profiles) {
+      if (!seen.add(p.id)) p.id = newId();
+      seen.add(p.id);
+    }
+    final active = profiles.where((p) => p.id == activeProfileId && !p.isSnapshot);
+    if (active.isEmpty) activeProfileId = profiles.firstWhere((p) => !p.isSnapshot).id;
+  }
 
   Profile get activeProfile => profiles.firstWhere(
-        (p) => p.id == activeProfileId,
-        orElse: () => profiles.first,
+        (p) => p.id == activeProfileId && !p.isSnapshot,
+        orElse: () => profiles.firstWhere((p) => !p.isSnapshot, orElse: () => profiles.first),
       );
+
+  /// renames a parameter in the active profile and everything that refers
+  /// to it (see [Profile.renameParamReferences]).
+  void renameParamReferences(String oldName, String newName) {
+    activeProfile.renameParamReferences(oldName, newName);
+    final i = automationMasterSwitchParams.indexOf(oldName);
+    if (i != -1) automationMasterSwitchParams[i] = newName;
+  }
 
   // most of the app just reads/mutates "the current parameters" - proxy
   // straight through to whichever profile is active so that code doesn't
@@ -722,22 +871,23 @@ class AppConfig {
     String activeProfileId;
 
     final rawProfiles = json['profiles'] as List?;
-    if (rawProfiles != null && rawProfiles.isNotEmpty) {
-      profiles = rawProfiles.cast<Map<String, dynamic>>().map(Profile.fromJson).toList();
+    if (rawProfiles != null && rawProfiles.whereType<Map<String, dynamic>>().isNotEmpty) {
+      profiles = rawProfiles.whereType<Map<String, dynamic>>().map(Profile.fromJson).toList();
       activeProfileId = (json['activeProfileId'] as String?) ?? profiles.first.id;
     } else {
       // migrate a pre-profiles config's flat "parameters" list into a single profile.
       final legacyParams = ((json['parameters'] as List?) ?? const [])
-          .cast<Map<String, dynamic>>()
+          .whereType<Map<String, dynamic>>()
           .map(ParamControl.fromJson)
+          .where((p) => p.name.isNotEmpty)
           .toList();
       profiles = [Profile(id: 'default', name: 'Default', parameters: legacyParams)];
       activeProfileId = 'default';
     }
 
     return AppConfig(
-      host: (json['host'] as String?) ?? '127.0.0.1',
-      port: (json['port'] as num?)?.toInt() ?? 9000,
+      host: _nonEmpty(json['host'] as String?) ?? '127.0.0.1',
+      port: _validPort((json['port'] as num?)?.toInt()) ?? 9000,
       profiles: profiles,
       activeProfileId: activeProfileId,
       themeSeedColor: colorFromHex(json['themeColor'] as String?) ?? defaultThemeSeedColor,
@@ -755,8 +905,9 @@ class AppConfig {
       showAutomationMasterSwitch: (json['showAutomationMasterSwitch'] as bool?) ?? false,
       automationMasterSwitchAll: (json['automationMasterSwitchAll'] as bool?) ?? true,
       automationMasterSwitchParams:
-          ((json['automationMasterSwitchParams'] as List?) ?? const []).cast<String>(),
+          ((json['automationMasterSwitchParams'] as List?) ?? const []).whereType<String>().toList(),
       liveParamNoiseThreshold: (json['liveParamNoiseThreshold'] as num?)?.toInt() ?? 10,
+      syncFromVrchat: (json['syncFromVrchat'] as bool?) ?? true,
       oscQueryFetchTimeoutSeconds: (json['oscQueryFetchTimeoutSeconds'] as num?)?.toInt() ?? 5,
       primaryOverride: colorFromHex(json['primaryOverride'] as String?),
       secondaryOverride: colorFromHex(json['secondaryOverride'] as String?),
@@ -778,6 +929,7 @@ class AppConfig {
       'automationMasterSwitchAll': automationMasterSwitchAll,
       'automationMasterSwitchParams': automationMasterSwitchParams,
       'liveParamNoiseThreshold': liveParamNoiseThreshold,
+      'syncFromVrchat': syncFromVrchat,
       'oscQueryFetchTimeoutSeconds': oscQueryFetchTimeoutSeconds,
       if (primaryOverride != null) 'primaryOverride': colorToHex(primaryOverride!),
       if (secondaryOverride != null) 'secondaryOverride': colorToHex(secondaryOverride!),
@@ -788,6 +940,10 @@ class AppConfig {
     };
   }
 }
+
+String? _nonEmpty(String? s) => (s == null || s.trim().isEmpty) ? null : s.trim();
+
+int? _validPort(int? port) => (port != null && port >= 1 && port <= 65535) ? port : null;
 
 Color? colorFromHex(String? hex) {
   if (hex == null) return null;

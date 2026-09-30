@@ -74,8 +74,8 @@ class _CurveEditorDialogState extends State<CurveEditorDialog> {
   String _fmt(double v) => v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toString();
 
   void _applyRange() {
-    final min = double.tryParse(_yMinController.text) ?? _yMin;
-    final max = double.tryParse(_yMaxController.text) ?? _yMax;
+    final min = parseUserDouble(_yMinController.text) ?? _yMin;
+    final max = parseUserDouble(_yMaxController.text) ?? _yMax;
     if (max <= min) {
       _yMinController.text = _fmt(_yMin);
       _yMaxController.text = _fmt(_yMax);
@@ -111,6 +111,10 @@ class _CurveEditorDialogState extends State<CurveEditorDialog> {
 
   void _addPoint(Offset local, Size size) {
     final p = _toCurveSpace(local, size);
+    // a point stacked on an existing x (or outside the endpoints) would make
+    // the curve ambiguous and trip up dragging.
+    if (p.dx <= _points.first.dx || p.dx >= _points.last.dx) return;
+    if (_points.any((q) => (q.dx - p.dx).abs() < 0.005)) return;
     setState(() {
       _points.add(p);
       _points.sort((a, b) => a.dx.compareTo(b.dx));
@@ -128,9 +132,14 @@ class _CurveEditorDialogState extends State<CurveEditorDialog> {
         _points[index] = Offset(_points[index].dx, p.dy);
         return;
       }
-      final minX = _points[index - 1].dx + 0.01;
-      final maxX = _points[index + 1].dx - 0.01;
-      _points[index] = Offset(p.dx.clamp(minX, maxX), p.dy);
+      // neighbors closer together than the 0.01 margins would make min >
+      // max, which clamp() throws on - pin to their midpoint instead.
+      final lo = _points[index - 1].dx;
+      final hi = _points[index + 1].dx;
+      final minX = lo + 0.01;
+      final maxX = hi - 0.01;
+      final x = minX <= maxX ? p.dx.clamp(minX, maxX) : (lo + hi) / 2;
+      _points[index] = Offset(x, p.dy);
     });
   }
 
@@ -333,7 +342,8 @@ class _CurvePainter extends CustomPainter {
     canvas.restore();
   }
 
+  // the points list is mutated in place while dragging, so an identity
+  // comparison never saw a change and the curve froze mid-drag.
   @override
-  bool shouldRepaint(covariant _CurvePainter oldDelegate) =>
-      oldDelegate.points != points || oldDelegate.selected != selected || oldDelegate.smooth != smooth;
+  bool shouldRepaint(covariant _CurvePainter oldDelegate) => true;
 }

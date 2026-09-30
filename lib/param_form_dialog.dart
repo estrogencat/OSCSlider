@@ -1,17 +1,26 @@
 import 'package:flutter/material.dart';
 
+import 'osc_client.dart';
 import 'param_control.dart';
 
-Future<ParamControl?> showParamFormDialog(BuildContext context, {ParamControl? existing}) {
+/// add/edit form. [takenNames] are names already used in the same list -
+/// saving under one of those (other than the parameter's own) is refused,
+/// since two entries sharing a name would share one live value.
+Future<ParamControl?> showParamFormDialog(
+  BuildContext context, {
+  ParamControl? existing,
+  Set<String> takenNames = const {},
+}) {
   return showDialog<ParamControl>(
     context: context,
-    builder: (context) => ParamFormDialog(existing: existing),
+    builder: (context) => ParamFormDialog(existing: existing, takenNames: takenNames),
   );
 }
 
 class ParamFormDialog extends StatefulWidget {
   final ParamControl? existing;
-  const ParamFormDialog({super.key, this.existing});
+  final Set<String> takenNames;
+  const ParamFormDialog({super.key, this.existing, this.takenNames = const {}});
 
   @override
   State<ParamFormDialog> createState() => _ParamFormDialogState();
@@ -29,6 +38,10 @@ class _ParamFormDialogState extends State<ParamFormDialog> {
   late ParamType _type;
   late NumericKind _numericKind;
   late bool _defaultBool;
+  String? _nameError;
+  String? _rangeError;
+  String? _defaultError;
+  String? _customError;
 
   @override
   void initState() {
@@ -37,9 +50,9 @@ class _ParamFormDialogState extends State<ParamFormDialog> {
     _nameController = TextEditingController(text: e?.name ?? '');
     _labelController = TextEditingController(text: e?.label ?? '');
     _categoryController = TextEditingController(text: e?.category ?? '');
-    _minController = TextEditingController(text: (e?.min ?? 0.0).toString());
-    _maxController = TextEditingController(text: (e?.max ?? 1.0).toString());
-    _defaultController = TextEditingController(text: (e?.defaultValue ?? 0.0).toString());
+    _minController = TextEditingController(text: _fmt(e?.min ?? 0.0));
+    _maxController = TextEditingController(text: _fmt(e?.max ?? 1.0));
+    _defaultController = TextEditingController(text: _fmt(e?.defaultValue ?? 0.0));
     _customType = oscTypeTags.contains(e?.customTypeTag) ? e!.customTypeTag : 'f';
     _customValueController = TextEditingController(text: e?.customValueText ?? '0');
     _type = e?.type ?? ParamType.slider;
@@ -59,24 +72,67 @@ class _ParamFormDialogState extends State<ParamFormDialog> {
     super.dispose();
   }
 
+  static String _fmt(double v) => v == v.roundToDouble() ? v.toStringAsFixed(1) : v.toString();
+
+  static double? _parse(String text) => parseUserDouble(text);
+
   void _save() {
-    final name = _nameController.text.trim();
-    if (name.isEmpty) return;
-    final label = _labelController.text.trim().isEmpty ? name : _labelController.text.trim();
+    final e = widget.existing;
+    final name = normalizeParamName(_nameController.text);
+    var nameError = validateParamName(name);
+    if (nameError == null && name != e?.name && widget.takenNames.contains(name)) {
+      nameError = 'There\'s already a parameter with this address';
+    }
+    final min = _parse(_minController.text);
+    final max = _parse(_maxController.text);
+    final def = _parse(_defaultController.text);
+    String? rangeError;
+    String? defaultError;
+    String? customError;
+    if (_type == ParamType.slider) {
+      if (min == null || max == null) {
+        rangeError = 'Min and max must be numbers';
+      } else if (min >= max) {
+        rangeError = 'Min has to be less than max';
+      }
+      if (def == null) defaultError = 'Default must be a number';
+    } else if (_type == ParamType.custom && !oscTypeHasNoValue(_customType)) {
+      try {
+        OscClient.encodeCustomArgument(_customType, _customValueController.text);
+      } catch (err) {
+        customError = err.toString();
+      }
+    }
+    setState(() {
+      _nameError = nameError;
+      _rangeError = rangeError;
+      _defaultError = defaultError;
+      _customError = customError;
+    });
+    if (nameError != null || rangeError != null || defaultError != null || customError != null) return;
+
+    final label = _labelController.text.trim().isEmpty ? name.split('/').last : _labelController.text.trim();
     final category = _categoryController.text.trim();
 
+    // editing keeps the parameter's automation/schedule - only dropped when
+    // the new type can't run it (e.g. a ramp on what's now a toggle).
+    final sameType = e != null && e.type == _type;
+    final keepsValues = e != null && _type != ParamType.custom && e.type != ParamType.custom;
+    final automation = e?.automation;
     final control = ParamControl(
       name: name,
       label: label,
       type: _type,
       category: category.isEmpty ? null : category,
-      min: double.tryParse(_minController.text) ?? 0.0,
-      max: double.tryParse(_maxController.text) ?? 1.0,
-      defaultValue: double.tryParse(_defaultController.text) ?? 0.0,
+      min: min ?? 0.0,
+      max: max ?? 1.0,
+      defaultValue: def ?? 0.0,
       numericKind: _numericKind,
       defaultBool: _defaultBool,
       customTypeTag: _customType,
       customValueText: _customValueController.text,
+      automation: sameType || (keepsValues && automation?.kind == AutomationKind.random) ? automation : null,
+      schedule: sameType || keepsValues ? e.schedule : null,
     );
     Navigator.of(context).pop(control);
   }
@@ -94,13 +150,19 @@ class _ParamFormDialogState extends State<ParamFormDialog> {
             children: [
               TextField(
                 controller: _nameController,
-                decoration: const InputDecoration(
+                autofocus: widget.existing == null,
+                decoration: InputDecoration(
                   labelText: 'OSC address',
                   hintText: 'e.g. VF67_Mayu/Purr, or /any/full/osc/address',
                   helperText: 'No leading "/" is shorthand for /avatar/parameters/<this>. '
                       'Start with "/" to send to that exact address instead.',
                   helperMaxLines: 2,
+                  errorText: _nameError,
+                  errorMaxLines: 2,
                 ),
+                onChanged: (_) {
+                  if (_nameError != null) setState(() => _nameError = null);
+                },
               ),
               const SizedBox(height: 8),
               TextField(
@@ -134,6 +196,14 @@ class _ParamFormDialogState extends State<ParamFormDialog> {
                   ],
                   onChanged: (v) => setState(() => _numericKind = v ?? NumericKind.float),
                 ),
+                if (_numericKind == NumericKind.int)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text(
+                      'VRChat int parameters go from 0 to 255.',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ),
                 const SizedBox(height: 8),
                 Row(
                   children: [
@@ -141,7 +211,7 @@ class _ParamFormDialogState extends State<ParamFormDialog> {
                       child: TextField(
                         controller: _minController,
                         keyboardType: const TextInputType.numberWithOptions(signed: true, decimal: true),
-                        decoration: const InputDecoration(labelText: 'Min'),
+                        decoration: InputDecoration(labelText: 'Min', errorText: _rangeError),
                       ),
                     ),
                     const SizedBox(width: 8),
@@ -149,7 +219,7 @@ class _ParamFormDialogState extends State<ParamFormDialog> {
                       child: TextField(
                         controller: _maxController,
                         keyboardType: const TextInputType.numberWithOptions(signed: true, decimal: true),
-                        decoration: const InputDecoration(labelText: 'Max'),
+                        decoration: InputDecoration(labelText: 'Max', errorText: _rangeError == null ? null : ''),
                       ),
                     ),
                   ],
@@ -158,7 +228,7 @@ class _ParamFormDialogState extends State<ParamFormDialog> {
                 TextField(
                   controller: _defaultController,
                   keyboardType: const TextInputType.numberWithOptions(signed: true, decimal: true),
-                  decoration: const InputDecoration(labelText: 'Default'),
+                  decoration: InputDecoration(labelText: 'Default', errorText: _defaultError),
                 ),
               ] else if (_type == ParamType.toggle) ...[
                 SwitchListTile(
@@ -184,6 +254,8 @@ class _ParamFormDialogState extends State<ParamFormDialog> {
                     decoration: InputDecoration(
                       labelText: 'Value',
                       hintText: oscTypeValueHint(_customType),
+                      errorText: _customError,
+                      errorMaxLines: 2,
                     ),
                   ),
                 ],

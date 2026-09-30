@@ -1,5 +1,9 @@
+import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
+
+import 'package:flutter/foundation.dart';
 
 import 'crash_log.dart';
 
@@ -17,132 +21,117 @@ class OscClient {
   final String host;
   final int port;
   RawDatagramSocket? _socket;
+  // shared by every send that races the first bind, so a burst of sends
+  // before the socket exists can't each open (and leak) their own socket.
+  Future<RawDatagramSocket>? _socketFuture;
+  Future<InternetAddress>? _targetFuture;
+  DateTime? _lookupFailedAt;
+  bool _disposed = false;
+
+  /// the most recent send failure (null once a send succeeds again) - lets
+  /// the UI say "can't reach host" instead of failing silently.
+  final ValueNotifier<String?> lastError = ValueNotifier(null);
 
   OscClient({required this.host, required this.port});
 
-  Future<void> sendFloat(String address, double value) async {
-    await _send(address, _oscString(',f'), (ByteData(4)..setFloat32(0, value, Endian.big)).buffer.asUint8List());
-  }
+  Future<void> sendFloat(String address, double value) =>
+      _send(address, ',f', (ByteData(4)..setFloat32(0, value, Endian.big)).buffer.asUint8List());
 
-  Future<void> sendInt(String address, int value) async {
-    await _send(address, _oscString(',i'), (ByteData(4)..setInt32(0, value, Endian.big)).buffer.asUint8List());
-  }
+  Future<void> sendInt(String address, int value) =>
+      _send(address, ',i', (ByteData(4)..setInt32(0, value, Endian.big)).buffer.asUint8List());
 
-  Future<void> sendDouble(String address, double value) async {
-    await _send(address, _oscString(',d'), (ByteData(8)..setFloat64(0, value, Endian.big)).buffer.asUint8List());
-  }
+  Future<void> sendDouble(String address, double value, {bool surfaceErrors = false}) => _send(
+      address, ',d', (ByteData(8)..setFloat64(0, value, Endian.big)).buffer.asUint8List(),
+      surfaceErrors: surfaceErrors);
 
-  Future<void> sendString(String address, String value) async {
-    await _send(address, _oscString(',s'), _oscString(value));
-  }
+  Future<void> sendString(String address, String value, {bool surfaceErrors = false}) =>
+      _send(address, ',s', oscString(value), surfaceErrors: surfaceErrors);
 
   // bool args carry no payload bytes - the type tag itself ('T' or 'F') is the value.
-  Future<void> sendBool(String address, bool value) async {
-    await _send(address, _oscString(value ? ',T' : ',F'), Uint8List(0));
-  }
-
-  Future<void> sendInt64(String address, int value) async {
-    await _send(address, _oscString(',h'), (ByteData(8)..setInt64(0, value, Endian.big)).buffer.asUint8List());
-  }
-
-  // OSC's "Symbol" - wire-identical to a string, just tagged distinctly for
-  // receivers that treat symbols and strings as separate concepts.
-  Future<void> sendSymbol(String address, String value) async {
-    await _send(address, _oscString(',S'), _oscString(value));
-  }
-
-  // sent as a 32-bit int carrying the character's code point, per the OSC spec.
-  Future<void> sendChar(String address, String char) async {
-    if (char.isEmpty) throw OscSendException('char value is empty');
-    await _send(
-        address, _oscString(',c'), (ByteData(4)..setInt32(0, char.runes.first, Endian.big)).buffer.asUint8List());
-  }
-
-  Future<void> sendRgba(String address, int r, int g, int b, int a) async {
-    await _send(address, _oscString(',r'), Uint8List.fromList([r, g, b, a]));
-  }
-
-  Future<void> sendMidi(String address, int port, int status, int data1, int data2) async {
-    await _send(address, _oscString(',m'), Uint8List.fromList([port, status, data1, data2]));
-  }
-
-  // length-prefixed raw bytes, padded to a 4-byte boundary same as strings.
-  Future<void> sendBlob(String address, Uint8List bytes) async {
-    final header = ByteData(4)..setInt32(0, bytes.length, Endian.big);
-    final paddedLen = (bytes.length % 4 == 0) ? bytes.length : bytes.length + (4 - bytes.length % 4);
-    final padded = Uint8List(paddedLen)..setRange(0, bytes.length, bytes);
-    await _send(address, _oscString(',b'), Uint8List.fromList([...header.buffer.asUint8List(), ...padded]));
-  }
-
-  // OSC-timetag: 32-bit seconds since 1900-01-01 + 32-bit fractional seconds.
-  // the all-zero-except-LSB value (1) is the spec's special "immediately".
-  Future<void> sendTimeTag(String address, double secondsSince1900) async {
-    final seconds = secondsSince1900.floor();
-    final frac = ((secondsSince1900 - seconds) * 4294967296.0).round();
-    final bytes = ByteData(8)
-      ..setUint32(0, seconds, Endian.big)
-      ..setUint32(4, frac, Endian.big);
-    await _send(address, _oscString(',t'), bytes.buffer.asUint8List());
-  }
-
-  Future<void> sendImmediateTimeTag(String address) async {
-    final bytes = ByteData(8)..setUint64(0, 1, Endian.big);
-    await _send(address, _oscString(',t'), bytes.buffer.asUint8List());
-  }
-
-  // Nil/Infinitum carry no payload bytes, same as True/False.
-  Future<void> sendNil(String address) async {
-    await _send(address, _oscString(',N'), Uint8List(0));
-  }
-
-  Future<void> sendInfinitum(String address) async {
-    await _send(address, _oscString(',I'), Uint8List(0));
-  }
+  Future<void> sendBool(String address, bool value, {bool surfaceErrors = false}) =>
+      _send(address, value ? ',T' : ',F', Uint8List(0), surfaceErrors: surfaceErrors);
 
   /// dispatches every OSC 1.0/1.1 type tag except arrays (which don't fit
   /// this app's one-parameter-one-value model), so the app can send types it
-  /// has no dedicated slider/toggle widget for.
+  /// has no dedicated slider/toggle widget for. throws on bad input or a
+  /// failed send, since this is only ever triggered by hand.
   Future<void> sendCustom(String address, String typeTag, String valueText) async {
+    final payload = encodeCustomArgument(typeTag, valueText);
+    await _send(address, ',$typeTag', payload, surfaceErrors: true);
+  }
+
+  /// the wire bytes for one argument of [typeTag] parsed from [valueText] -
+  /// exposed separately so the parameter form can validate before saving.
+  static Uint8List encodeCustomArgument(String typeTag, String valueText) {
+    final text = valueText.trim();
+    ByteData bytes(int n) => ByteData(n);
     switch (typeTag) {
       case 'f':
-        await sendFloat(address, double.parse(valueText));
+        return (bytes(4)..setFloat32(0, _parseDouble(text), Endian.big)).buffer.asUint8List();
       case 'i':
-        await sendInt(address, int.parse(valueText));
+        return (bytes(4)..setInt32(0, _parseInt(text, 32), Endian.big)).buffer.asUint8List();
       case 'd':
-        await sendDouble(address, double.parse(valueText));
+        return (bytes(8)..setFloat64(0, _parseDouble(text), Endian.big)).buffer.asUint8List();
       case 'h':
-        await sendInt64(address, int.parse(valueText));
-      case 's':
-        await sendString(address, valueText);
-      case 'S':
-        await sendSymbol(address, valueText);
+        return (bytes(8)..setInt64(0, _parseInt(text, 64), Endian.big)).buffer.asUint8List();
+      case 's' || 'S':
+        // OSC's "Symbol" is wire-identical to a string, just tagged distinctly
+        // for receivers that treat symbols and strings as separate concepts.
+        return oscString(valueText);
       case 'c':
-        await sendChar(address, valueText);
+        // sent as a 32-bit int carrying the character's code point.
+        if (valueText.isEmpty) throw OscSendException('char value is empty');
+        return (bytes(4)..setInt32(0, valueText.runes.first, Endian.big)).buffer.asUint8List();
       case 'r':
-        final bytes = _parseHexBytes(valueText, 4, 'RGBA color');
-        await sendRgba(address, bytes[0], bytes[1], bytes[2], bytes[3]);
+        return Uint8List.fromList(_parseHexBytes(text, 4, 'RGBA color'));
       case 'm':
-        final bytes = _parseHexBytes(valueText, 4, 'MIDI message');
-        await sendMidi(address, bytes[0], bytes[1], bytes[2], bytes[3]);
+        return Uint8List.fromList(_parseHexBytes(text, 4, 'MIDI message'));
       case 'b':
-        await sendBlob(address, Uint8List.fromList(_parseHex(valueText)));
+        // length-prefixed raw bytes, padded to a 4-byte boundary same as strings.
+        final raw = _parseHex(text);
+        final header = ByteData(4)..setInt32(0, raw.length, Endian.big);
+        final paddedLen = (raw.length + 3) & ~3;
+        final padded = Uint8List(paddedLen)..setRange(0, raw.length, raw);
+        return Uint8List.fromList([...header.buffer.asUint8List(), ...padded]);
       case 't':
-        if (valueText.trim().toLowerCase() == 'immediate') {
-          await sendImmediateTimeTag(address);
+        // OSC-timetag: 32-bit seconds since 1900-01-01 + 32-bit fractional
+        // seconds. the all-zero-except-LSB value is the spec's "immediately".
+        final out = ByteData(8);
+        if (text.toLowerCase() == 'immediate') {
+          out.setUint64(0, 1, Endian.big);
         } else {
-          await sendTimeTag(address, double.parse(valueText));
+          final secondsSince1900 = _parseDouble(text);
+          if (secondsSince1900 < 0 || secondsSince1900 >= 4294967296.0) {
+            throw OscSendException('time tag must be between 0 and 4294967295 seconds');
+          }
+          final seconds = secondsSince1900.floor();
+          final frac = ((secondsSince1900 - seconds) * 4294967296.0).floor().clamp(0, 0xFFFFFFFF);
+          out
+            ..setUint32(0, seconds, Endian.big)
+            ..setUint32(4, frac, Endian.big);
         }
-      case 'T':
-        await sendBool(address, true);
-      case 'F':
-        await sendBool(address, false);
-      case 'N':
-        await sendNil(address);
-      case 'I':
-        await sendInfinitum(address);
+        return out.buffer.asUint8List();
+      case 'T' || 'F' || 'N' || 'I':
+        // True/False/Nil/Infinitum carry no payload bytes.
+        return Uint8List(0);
       default:
         throw OscSendException('unsupported OSC type tag "$typeTag"');
     }
+  }
+
+  static double _parseDouble(String text) {
+    final v = double.tryParse(text);
+    if (v == null) throw OscSendException('"$text" is not a number');
+    return v;
+  }
+
+  static int _parseInt(String text, int bits) {
+    final v = int.tryParse(text);
+    if (v == null) throw OscSendException('"$text" is not a whole number');
+    if (bits == 32 && (v < -2147483648 || v > 2147483647)) {
+      throw OscSendException('$v doesn\'t fit in a 32-bit int');
+    }
+    return v;
   }
 
   static List<int> _parseHex(String text) {
@@ -157,34 +146,91 @@ class OscClient {
     return bytes;
   }
 
-  // sends fire hundreds of times a second (every automation tick, every
-  // slider drag) and are almost always unawaited - OSC is inherently
-  // fire-and-forget, so a failed send should just be dropped, not surface as
-  // an unhandled async error that could take the whole app down.
-  Future<void> _send(String address, Uint8List typeTagBytes, Uint8List argBytes) async {
-    try {
-      _socket ??= await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
-      final out = BytesBuilder();
-      out.add(_oscString(address));
-      out.add(typeTagBytes);
-      out.add(argBytes);
-      _socket!.send(out.toBytes(), InternetAddress(host), port);
-    } catch (e, st) {
-      await CrashLog.record(e, st, context: 'OscClient send $address');
-    }
+  /// a complete OSC message for [address] carrying [typeTags]/[argBytes].
+  static Uint8List encodeMessage(String address, String typeTags, Uint8List argBytes) {
+    return (BytesBuilder(copy: false)
+          ..add(oscString(address))
+          ..add(oscString(typeTags))
+          ..add(argBytes))
+        .toBytes();
   }
 
-  // null-terminated ASCII string, padded to a 4-byte boundary per the OSC spec.
-  static Uint8List _oscString(String s) {
-    final raw = <int>[...s.codeUnits, 0];
-    final paddedLen = (raw.length % 4 == 0) ? raw.length : raw.length + (4 - raw.length % 4);
-    final out = Uint8List(paddedLen);
+  // UTF-8, null-terminated, padded to a 4-byte boundary per the OSC spec -
+  // UTF-8 rather than raw code units, or any non-ASCII parameter name (e.g.
+  // Japanese) would be mangled into an address VRChat can't match.
+  static Uint8List oscString(String s) {
+    final raw = utf8.encode(s);
+    final out = Uint8List((raw.length + 4) & ~3);
     out.setRange(0, raw.length, raw);
     return out;
   }
 
+  Future<InternetAddress> _target() {
+    // hostnames ("localhost", a PC name) need a lookup - InternetAddress()
+    // alone only accepts numeric IPs and used to throw on every send.
+    final literal = InternetAddress.tryParse(host);
+    if (literal != null) return _targetFuture ??= Future.value(literal);
+    // retry a failed lookup at most every few seconds instead of every send.
+    if (_targetFuture == null ||
+        (_lookupFailedAt != null && DateTime.now().difference(_lookupFailedAt!) > const Duration(seconds: 5))) {
+      _lookupFailedAt = null;
+      _targetFuture = InternetAddress.lookup(host).then((list) {
+        if (list.isEmpty) throw OscSendException('could not resolve "$host"');
+        return list.firstWhere((a) => a.type == InternetAddressType.IPv4, orElse: () => list.first);
+      }).catchError((Object e) {
+        _lookupFailedAt = DateTime.now();
+        throw OscSendException('could not resolve host "$host": $e');
+      });
+    }
+    return _targetFuture!;
+  }
+
+  Future<RawDatagramSocket> _bindFor(InternetAddress target) {
+    return _socketFuture ??= RawDatagramSocket.bind(
+      target.type == InternetAddressType.IPv6 ? InternetAddress.anyIPv6 : InternetAddress.anyIPv4,
+      0,
+    ).then((socket) {
+      // lets a subnet broadcast address (e.g. 192.168.1.255) work as a host.
+      socket.broadcastEnabled = true;
+      if (_disposed) {
+        socket.close();
+      } else {
+        _socket = socket;
+      }
+      return socket;
+    }).catchError((Object e) {
+      _socketFuture = null;
+      throw e;
+    });
+  }
+
+  // sends fire hundreds of times a second (every automation tick, every
+  // slider drag) and are almost always unawaited - OSC is inherently
+  // fire-and-forget, so a failed send is just recorded (throttled), not
+  // surfaced as an unhandled async error that could take the whole app down.
+  Future<void> _send(String address, String typeTags, Uint8List argBytes, {bool surfaceErrors = false}) async {
+    if (_disposed) return;
+    try {
+      if (port < 1 || port > 65535) throw OscSendException('port $port is out of range (1-65535)');
+      final packet = encodeMessage(address, typeTags, argBytes);
+      if (packet.length > 65000) throw OscSendException('message is too large for one UDP packet');
+      final target = await _target();
+      final socket = await _bindFor(target);
+      if (_disposed) return;
+      final sent = socket.send(packet, target, port);
+      if (sent == 0) throw OscSendException('send buffer full - packet dropped');
+      if (lastError.value != null) lastError.value = null;
+    } catch (e, st) {
+      if (!_disposed) lastError.value = e.toString();
+      if (surfaceErrors) rethrow;
+      unawaited(CrashLog.record(e, st, context: 'OscClient send $address'));
+    }
+  }
+
   void dispose() {
+    _disposed = true;
     _socket?.close();
     _socket = null;
+    lastError.dispose();
   }
 }

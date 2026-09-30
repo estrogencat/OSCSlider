@@ -25,6 +25,9 @@ class ScheduleEngine {
   final Map<String, _ScheduleRuntimeState> _runtime = {};
   final Map<String, _PendingRevert> _pendingReverts = {};
 
+  /// true while [name] has a revert queued - the engine still owns its value.
+  bool hasPendingRevert(String name) => _pendingReverts.containsKey(name);
+
   void reset() {
     _runtime.clear();
     _pendingReverts.clear();
@@ -88,8 +91,12 @@ class ScheduleEngine {
     void Function(ParamControl, double) onSlider,
     void Function(ParamControl, bool) onToggle,
   ) {
+    // firing again while a revert is still pending (an interval shorter
+    // than its revert time) must keep reverting to the ORIGINAL value - the
+    // current one is just the previous pulse, which would otherwise stick.
+    final pending = _pendingReverts[param.name];
     if (param.type == ParamType.slider) {
-      final before = currentValues[param.name] as double? ?? param.defaultValue;
+      final before = pending?.toValue ?? sliderValueOf(currentValues, param);
       onSlider(param, sched.targetValue);
       if (sched.revertAfterSeconds > 0) {
         _pendingReverts[param.name] = _PendingRevert(
@@ -98,7 +105,7 @@ class ScheduleEngine {
         );
       }
     } else if (param.type == ParamType.toggle) {
-      final before = currentValues[param.name] as bool? ?? param.defaultBool;
+      final before = pending?.toBool ?? toggleValueOf(currentValues, param);
       onToggle(param, sched.targetBool);
       if (sched.revertAfterSeconds > 0) {
         _pendingReverts[param.name] = _PendingRevert(

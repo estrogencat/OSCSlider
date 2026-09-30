@@ -1,7 +1,7 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'dart:ui';
 
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
@@ -9,36 +9,41 @@ import 'package:url_launcher/url_launcher.dart';
 
 import 'app_updater.dart';
 import 'automation_dialog.dart';
-import 'automation_engine.dart';
 import 'automation_master_switch_dialog.dart';
 import 'config_store.dart';
+import 'connection_status.dart';
 import 'crash_log.dart';
+import 'discovery_flow.dart';
 import 'discovery_sheet.dart';
 import 'error_dialog.dart';
-import 'osc_client.dart';
+import 'live_controller.dart';
 import 'osc_input_hub.dart';
-import 'osc_listener.dart';
-import 'oscquery_client.dart';
+import 'param_card.dart';
 import 'param_control.dart';
 import 'param_form_dialog.dart';
-import 'schedule_engine.dart';
 import 'sequence_editor_page.dart';
-import 'sequence_engine.dart';
 import 'sequences_page.dart';
 import 'settings_page.dart';
 import 'theme_notifier.dart';
-import 'trigger_engine.dart';
 
 void main() {
   // OSC/networking code (socket sends, discovery, HTTP fetches) fires
   // frequently and mostly unawaited - a transient error there would
   // otherwise be an uncaught async error that silently kills the app with
   // no trace. this is the last-resort net; see CrashLog for where it lands.
-  FlutterError.onError = (details) {
-    CrashLog.record(details.exception, details.stack, context: 'FlutterError');
-  };
   runZonedGuarded(
-    () => runApp(const OscSliderApp()),
+    () {
+      WidgetsFlutterBinding.ensureInitialized();
+      FlutterError.onError = (details) {
+        FlutterError.presentError(details);
+        CrashLog.record(details.exception, details.stack, context: 'FlutterError');
+      };
+      PlatformDispatcher.instance.onError = (error, stack) {
+        CrashLog.record(error, stack, context: 'platform');
+        return true;
+      };
+      runApp(const OscSliderApp());
+    },
     (error, stack) => CrashLog.record(error, stack, context: 'uncaught'),
   );
 }
@@ -63,77 +68,111 @@ class OscSliderApp extends StatelessWidget {
 }
 
 class HomePage extends StatefulWidget {
-  const HomePage({super.key});
+  /// tests skip the network-y startup bits (update check, OSCQuery) and
+  /// hand in a config instead of reading config.json.
+  final bool startServices;
+  final AppConfig? initialConfig;
+  const HomePage({super.key, this.startServices = true, this.initialConfig});
 
   @override
   State<HomePage> createState() => _HomePageState();
 }
 
 class _HomePageState extends State<HomePage> {
-  AppConfig? _config;
-  OscClient? _osc;
-  String? _error;
+  LiveController? _live;
+  ConfigLoadException? _loadError;
   bool _discovering = false;
-  // developer-mode-only escape hatch: a second Discover click within 1s of a
-  // "nothing found" failure opens the add menu anyway, empty.
-  DateTime? _lastDiscoverFailure;
+  bool _pulling = false;
   String _searchQuery = '';
-
   final _searchController = TextEditingController();
-  // holds double for slider params, bool for toggle params.
-  final Map<String, Object> _values = {};
-  final Map<String, TextEditingController> _sliderTextControllers = {};
-  final Map<String, TextEditingController> _customValueControllers = {};
-  StreamSubscription<OscMessage>? _avatarChangeSub;
-  bool _avatarWatcherActive = false;
-  final _automationEngine = AutomationEngine();
-  final _scheduleEngine = ScheduleEngine();
-  final _sequenceEngine = SequenceEngine();
-  final _triggerEngine = TriggerEngine();
-  Timer? _engineTimer;
-  // last manual slider/toggle touch anywhere - drives idle schedules.
-  DateTime _lastInteraction = DateTime.now();
-
-  bool get _advancedMode => _config?.advancedMode ?? false;
+  final Set<String> _collapsedCategories = {};
+  AppLifecycleListener? _lifecycle;
 
   @override
   void initState() {
     super.initState();
-    _reload();
-    _engineTimer = Timer.periodic(const Duration(milliseconds: 33), _tickEngines);
-    _checkForUpdateSilently();
-    _checkForDuplicateInstance();
+    _lifecycle = AppLifecycleListener(onExitRequested: _onExitRequested);
+    final initial = widget.initialConfig;
+    if (initial != null) {
+      _live = LiveController(initial)..onNotice = _notice;
+    } else {
+      _load();
+    }
+    if (widget.startServices) {
+      _checkForUpdateSilently();
+      _checkForDuplicateInstance();
+    }
+  }
+
+  // closing the window: let any pending config write land, and tell VRChat
+  // (via an mDNS goodbye) to stop sending to this app's OSCQuery port.
+  Future<AppExitResponse> _onExitRequested() async {
+    try {
+      await Future.wait([ConfigStore.flush(), oscInputHub.stop()]).timeout(const Duration(seconds: 2));
+    } catch (_) {}
+    return AppExitResponse.exit;
+  }
+
+  Future<void> _load({Future<AppConfig> Function()? loader}) async {
+    try {
+      final config = await (loader ?? ConfigStore.load)();
+      if (!mounted) return;
+      setState(() {
+        _loadError = null;
+        final live = _live;
+        if (live == null) {
+          _live = LiveController(config)..onNotice = _notice;
+        } else {
+          // reconcile rather than hard-reset - values that still fit keep
+          // what's live instead of snapping back to their defaults.
+          live.replaceConfig(config);
+        }
+      });
+      if (widget.startServices) {
+        unawaited(oscInputHub.start(legacyPort: config.port + 1));
+      }
+    } on ConfigLoadException catch (e) {
+      if (mounted) setState(() => _loadError = e);
+    } catch (e) {
+      if (mounted) setState(() => _loadError = ConfigLoadException(e.toString(), backupAvailable: false));
+    }
+  }
+
+  void _notice(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
   }
 
   // silent - only shows anything if a newer release is actually found.
   Future<void> _checkForUpdateSilently() async {
-    final info = await PackageInfo.fromPlatform();
-    final update = await checkForUpdate(info.version);
-    if (update == null || !mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text('OSCSlider v${update.version} is available.'),
-      action: SnackBarAction(label: 'View', onPressed: () => launchUrl(Uri.parse(update.url))),
-    ));
+    try {
+      final info = await PackageInfo.fromPlatform();
+      final update = await checkForUpdate(info.version);
+      if (update == null || !mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('OSCSlider v${update.version} is available.'),
+        action: SnackBarAction(label: 'View', onPressed: () => launchUrl(Uri.parse(update.url))),
+      ));
+    } catch (_) {}
   }
 
-  // two copies running at once silently fight over the same OSC listening
-  // ports - Auto Profile Mode or "highlight active parameters" can end up
-  // receiving nothing with no visible error. warn once on launch; dismiss
-  // only, no "close the other one for you" action.
+  // two copies running at once would both drive the same parameters and
+  // fight over them. warn once on launch; dismiss only.
   Future<void> _checkForDuplicateInstance() async {
+    if (!Platform.isWindows) return;
     try {
       final exeName = Platform.resolvedExecutable.split(Platform.pathSeparator).last;
       final result = await Process.run('tasklist', ['/FI', 'IMAGENAME eq $exeName', '/FO', 'CSV', '/NH']);
-      final count = exeName.allMatches(result.stdout as String).length;
+      final count = exeName.toLowerCase().allMatches((result.stdout as String).toLowerCase()).length;
       if (count <= 1 || !mounted) return;
       await showDialog<void>(
         context: context,
         builder: (context) => AlertDialog(
           title: const Text('Another OSCSlider is already running'),
           content: const Text(
-            'Two copies running at once can silently fight over the same OSC listening ports - '
-            'Auto Profile Mode or "highlight active parameters" may stop receiving anything with '
-            'no visible error. Close the other one if you run into that.',
+            'Both copies will send to VRChat independently - automations or sequences running in '
+            'both will fight over the same parameters, and they\'ll overwrite each other\'s '
+            'config.json. Close one of them if that isn\'t what you meant.',
           ),
           actions: [
             TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Dismiss')),
@@ -145,164 +184,42 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  void _tickEngines(Timer timer) {
-    final config = _config;
-    if (config == null) return;
-    // watch for auto-disable-on-completion so it gets persisted, without
-    // writing config.json every tick just because a value changed.
-    final wasAutomationEnabled = {
-      for (final p in config.parameters)
-        if (p.automation != null) p.name: p.automation!.enabled,
-    };
-    final wasScheduleEnabled = {
-      for (final p in config.parameters)
-        if (p.schedule != null) p.name: p.schedule!.enabled,
-    };
-    final wasSequenceEnabled = {for (final s in config.sequences) s.id: s.enabled};
-    final wasSeqParamAutoEnabled = {
-      for (final s in config.sequences)
-        for (final entry in s.paramAutomations.entries) '${s.id}:${entry.key}': entry.value.enabled,
-    };
-
-    var changed = false;
-    void onSlider(ParamControl param, double value) {
-      _values[param.name] = value;
-      _sliderTextControllers[param.name]?.text = formatParamNumber(value, _advancedMode);
-      _sendSlider(param, value);
-      changed = true;
-    }
-
-    void onToggle(ParamControl param, bool value) {
-      _values[param.name] = value;
-      _osc?.sendBool(oscAddressFor(param), value);
-      changed = true;
-    }
-
-    // only one source may drive a parameter at a time: a sequence actively
-    // driving it wins over its global automation, and that sequence's own
-    // step script (if targeting the same parameter) wins over its
-    // paramAutomations override. precomputed so both loops below skip
-    // whichever side loses.
-    final sequenceDrivenNow = <String>{};
-    final seqStepTargets = <String, Set<String>>{};
-    for (final seq in config.sequences) {
-      if (!seq.enabled) continue;
-      final stepTargets = seq.steps
-          .where((s) => s.kind == SequenceStepKind.setValue)
-          .map((s) => s.paramName)
-          .toSet();
-      seqStepTargets[seq.id] = stepTargets;
-      for (final entry in seq.paramAutomations.entries) {
-        if (entry.value.enabled && !stepTargets.contains(entry.key)) {
-          sequenceDrivenNow.add(entry.key);
-        }
-      }
-    }
-
-    final automationTargets = <AutomationTarget>[];
-    for (final p in config.parameters) {
-      final auto = p.automation;
-      if (auto != null && auto.enabled && !sequenceDrivenNow.contains(p.name)) {
-        automationTargets.add(AutomationTarget(
-          key: 'param:${p.name}',
-          param: p,
-          automation: auto,
-          onFinished: () => auto.enabled = false,
-        ));
-      }
-    }
-    for (final seq in config.sequences) {
-      if (!seq.enabled) continue;
-      final stepTargets = seqStepTargets[seq.id]!;
-      for (final entry in seq.paramAutomations.entries) {
-        if (!entry.value.enabled || stepTargets.contains(entry.key)) continue;
-        final param = _findParamByName(config.parameters, entry.key);
-        if (param == null) continue;
-        final auto = entry.value;
-        automationTargets.add(AutomationTarget(
-          key: 'seq:${seq.id}:${entry.key}',
-          param: param,
-          automation: auto,
-          onFinished: () => auto.enabled = false,
-        ));
-      }
-    }
-
-    _triggerEngine.tick(config.parameters, config.sequences, _values);
-    _automationEngine.tick(automationTargets, onSlider, onToggle);
-    _scheduleEngine.tick(config.parameters, _lastInteraction, _values, onSlider, onToggle);
-    _sequenceEngine.tick(config.sequences, config.parameters, _values, onSlider, onToggle);
-
-    if (changed) setState(() {});
-
-    final justFinished =
-        config.parameters.any((p) => wasAutomationEnabled[p.name] == true && p.automation?.enabled == false) ||
-            config.parameters.any((p) => wasScheduleEnabled[p.name] == true && p.schedule?.enabled == false) ||
-            config.sequences.any((s) => wasSequenceEnabled[s.id] == true && !s.enabled) ||
-            config.sequences.any((s) => s.paramAutomations.entries.any(
-                (e) => wasSeqParamAutoEnabled['${s.id}:${e.key}'] == true && e.value.enabled == false));
-    if (justFinished) _persist();
+  @override
+  void dispose() {
+    _lifecycle?.dispose();
+    _live?.dispose();
+    _searchController.dispose();
+    super.dispose();
   }
 
-  ParamControl? _findParamByName(List<ParamControl> parameters, String name) {
-    for (final p in parameters) {
-      if (p.name == name) return p;
-    }
-    return null;
-  }
-
-  // manual interaction pauses (not deletes) a running automation, and resets
-  // the idle clock for idle-triggered schedules.
-  void _recordInteraction(ParamControl param) {
-    _lastInteraction = DateTime.now();
-    final auto = param.automation;
-    if (auto != null && auto.enabled) {
-      auto.enabled = false;
-      _persist();
-    }
-  }
+  // ---- automation button / sequence links ----
 
   Future<void> _openAutomationDialog(ParamControl param) async {
-    final changed = await showAutomationDialog(context, param, _config?.parameters ?? const []);
+    final live = _live!;
+    final changed = await showAutomationDialog(context, param, live.parameters);
     if (!changed) return;
-    _persist();
-    setState(() {});
+    live.persist();
+    live.reconcile();
   }
-
-  // sequences with a paramAutomations entry for this parameter - relevant
-  // when the parameter has no automation of its own, since that's the only
-  // other thing that can be driving its live value.
-  List<AutomationSequence> _sequencesAutomating(ParamControl param) {
-    final config = _config;
-    if (config == null) return const [];
-    return config.sequences.where((s) => s.paramAutomations.containsKey(param.name)).toList();
-  }
-
-  // true if [seq] is actually ticking its paramAutomations entry for [param]
-  // right now - see sequenceActivelyDrivesParam in param_control.dart, also
-  // used by the master switch's eligibility so both agree on the same
-  // definition.
-  bool _sequenceActivelyDrives(AutomationSequence seq, ParamControl param) =>
-      sequenceActivelyDrivesParam(seq, param.name);
 
   // schedules are folded into the same dialog as automations now (just
   // another "Type" option), so one button covers both.
   Widget _automationButton(ParamControl param) {
+    final live = _live!;
     final auto = param.automation;
     final sched = param.schedule;
     final scheme = Theme.of(context).colorScheme;
 
-    final owners = _sequencesAutomating(param);
+    final owners = live.sequences.where((s) => s.paramAutomations.containsKey(param.name)).toList();
     // only surface "linked to a sequence" while some owning sequence is
     // actually enabled - a disabled sequence's stale link shouldn't
     // permanently block reaching this parameter's own automation.
     final activeOwners = owners.where((s) => s.enabled).toList();
-    final runningOwners = activeOwners.where((s) => _sequenceActivelyDrives(s, param)).toList();
+    final runningOwners = activeOwners.where((s) => sequenceActivelyDrivesParam(s, param.name)).toList();
     final sequenceActive = runningOwners.isNotEmpty;
 
     // a sequence actively driving this parameter wins over (and hides) its
-    // global automation/schedule, matching _tickEngines' own suppression -
-    // otherwise this button would hide that a sequence is in charge.
+    // global automation/schedule, matching the tick loop's own suppression.
     final ownRunning = !sequenceActive && ((auto?.enabled ?? false) || (sched?.enabled ?? false));
 
     if (!ownRunning && activeOwners.isNotEmpty) {
@@ -321,11 +238,10 @@ class _HomePageState extends State<HomePage> {
     }
 
     final configured = auto != null || sched != null;
-    final running = ownRunning;
     return IconButton(
-      icon: Icon(running ? Icons.auto_awesome : Icons.auto_awesome_outlined),
-      color: running ? scheme.primary : (configured ? scheme.onSurfaceVariant : scheme.outline),
-      tooltip: running
+      icon: Icon(ownRunning ? Icons.auto_awesome : Icons.auto_awesome_outlined),
+      color: ownRunning ? scheme.primary : (configured ? scheme.onSurfaceVariant : scheme.outline),
+      tooltip: ownRunning
           ? 'Automation running - tap to edit'
           : (configured ? 'Automation paused - tap to edit' : 'Add automation'),
       onPressed: () => _openAutomationDialog(param),
@@ -333,28 +249,28 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _manageSequenceAutomation(ParamControl param, List<AutomationSequence> owners) async {
+    final live = _live!;
     await showDialog<void>(
       context: context,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (dialogContext, setDialogState) {
-          final anyRunning = owners.any((s) => _sequenceActivelyDrives(s, param));
+      builder: (dialogContext) => ListenableBuilder(
+        listenable: live,
+        builder: (dialogContext, _) {
+          final anyRunning = owners.any((s) => sequenceActivelyDrivesParam(s, param.name));
           return AlertDialog(
             title: Text('"${param.label}" automation'),
             content: SizedBox(
-              width: 380,
+              width: 420,
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
                     anyRunning
-                        ? 'This parameter has no automation of its own - its value is '
-                            'being driven by a sequence instead.'
-                        : 'This parameter has no automation of its own - it\'s linked to a '
-                            'sequence automation below, but nothing is currently driving it.',
+                        ? 'Its value is being driven by a sequence\'s own automation right now.'
+                        : 'It\'s linked to a sequence automation below, but nothing is currently driving it.',
                   ),
                   const SizedBox(height: 12),
-                  for (final seq in owners)
+                  for (final seq in owners.where((s) => s.paramAutomations.containsKey(param.name)))
                     Card(
                       margin: const EdgeInsets.symmetric(vertical: 4),
                       child: ListTile(
@@ -364,7 +280,7 @@ class _HomePageState extends State<HomePage> {
                               ? 'Sequence not running'
                               : !(seq.paramAutomations[param.name]?.enabled ?? false)
                                   ? 'Paused in this sequence'
-                                  : _sequenceActivelyDrives(seq, param)
+                                  : sequenceActivelyDrivesParam(seq, param.name)
                                       ? 'Running'
                                       : 'Suppressed - a step in this sequence also targets this parameter',
                         ),
@@ -374,9 +290,9 @@ class _HomePageState extends State<HomePage> {
                             Switch(
                               value: seq.paramAutomations[param.name]?.enabled ?? false,
                               onChanged: (v) {
-                                setState(() => seq.paramAutomations[param.name]?.enabled = v);
-                                setDialogState(() {});
-                                _persist();
+                                seq.paramAutomations[param.name]?.enabled = v;
+                                live.persist();
+                                live.reconcile();
                               },
                             ),
                             IconButton(
@@ -384,15 +300,16 @@ class _HomePageState extends State<HomePage> {
                               tooltip: 'Open sequence',
                               onPressed: () {
                                 Navigator.of(dialogContext).pop();
-                                _openSpecificSequenceEditor(seq);
+                                _openSequenceEditor(seq);
                               },
                             ),
                             IconButton(
-                              icon: const Icon(Icons.delete_outline),
-                              tooltip: 'Remove automation from this sequence',
+                              icon: const Icon(Icons.link_off),
+                              tooltip: 'Remove this automation from the sequence',
                               onPressed: () {
-                                setState(() => seq.paramAutomations.remove(param.name));
-                                _persist();
+                                seq.paramAutomations.remove(param.name);
+                                live.persist();
+                                live.reconcile();
                                 Navigator.of(dialogContext).pop();
                               },
                             ),
@@ -424,429 +341,67 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Future<void> _openSpecificSequenceEditor(AutomationSequence sequence) async {
-    final config = _config;
-    if (config == null) return;
-    await Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) => SequenceEditorPage(
-        sequence: sequence,
-        config: config,
-        values: _values,
-        sliderTextControllers: _sliderTextControllers,
-        customValueControllers: _customValueControllers,
-        osc: _osc,
-        advancedMode: _advancedMode,
-        developerMode: config.developerMode,
-        onPersist: _persist,
-        onInteraction: _recordInteraction,
-      ),
-    ));
-    _reconcileAfterExternalEdit();
-  }
+  // ---- navigation ----
 
-  void _disposeControllers() {
-    for (final c in _sliderTextControllers.values) {
-      c.dispose();
-    }
-    for (final c in _customValueControllers.values) {
-      c.dispose();
-    }
-    _sliderTextControllers.clear();
-    _customValueControllers.clear();
-  }
-
-  Future<void> _reload() async {
-    setState(() {
-      _error = null;
-    });
-    try {
-      final config = await ConfigStore.load();
-      setState(() {
-        _config = config;
-      });
-      // reconcile rather than hard-reset - on first launch _values is empty
-      // so this initializes everything just like a full reset would, but on
-      // a manual refresh (or any later reload) it preserves whatever's
-      // already live instead of snapping every parameter back to default.
-      _reconcileAfterExternalEdit();
-      _automationEngine.reset();
-      _scheduleEngine.reset();
-      _sequenceEngine.reset();
-      _triggerEngine.reset();
-    } catch (e) {
-      setState(() {
-        _error = e.toString();
-      });
-    }
-  }
-
-  // (re)builds _values/controllers from scratch for whichever profile is
-  // currently active - used on load and whenever you deliberately switch to
-  // a different profile, where starting fresh is exactly what you want.
-  void _resetControllersForActiveProfile() {
-    final config = _config;
-    if (config == null) return;
-    _disposeControllers();
-    final values = <String, Object>{};
-    for (final p in config.parameters) {
-      switch (p.type) {
-        case ParamType.toggle:
-          values[p.name] = p.defaultBool;
-        case ParamType.slider:
-          values[p.name] = p.defaultValue;
-          _sliderTextControllers[p.name] =
-              TextEditingController(text: formatParamNumber(p.defaultValue, config.advancedMode));
-        case ParamType.custom:
-          _customValueControllers[p.name] = TextEditingController(text: p.customValueText);
-      }
-    }
-    setState(() {
-      _values
-        ..clear()
-        ..addAll(values);
-    });
-  }
-
-  void _switchProfile(String profileId) {
-    final config = _config;
-    if (config == null || config.activeProfileId == profileId) return;
-    setState(() => config.activeProfileId = profileId);
-    _persist();
-    _resetControllersForActiveProfile();
-    // a same-named parameter in the new profile should start its automation
-    // fresh, not inherit timing from whatever was running under this name a
-    // moment ago on the old profile.
-    _automationEngine.reset();
-    _scheduleEngine.reset();
-    _sequenceEngine.reset();
-    _triggerEngine.reset();
-  }
-
-  // VRChat's default OSC layout always pairs a send port N with a receive
-  // port N+1 (e.g. 9000/9001) - derive the listen port from the configured
-  // send port rather than hardcoding it, so a customized VRChat OSC setup
-  // still works.
-  int get _avatarChangeListenPort => (_config?.port ?? 9000) + 1;
-
-  void _startOrStopAvatarWatcher() {
-    final config = _config;
-    if (config == null) return;
-    if (config.autoProfileMode) {
-      if (_avatarWatcherActive) return;
-      _avatarWatcherActive = true;
-      oscInputHub.acquire(_avatarChangeListenPort).then((ok) {
-        // Auto Mode may have been toggled off again before this resolved -
-        // the matching release() already happened in the else branch below,
-        // so just bail out without subscribing to anything.
-        if (!_avatarWatcherActive) return;
-        if (!ok) {
-          _avatarWatcherActive = false;
-          if (!mounted) return;
-          ScaffoldMessenger.of(context)
-              .showSnackBar(const SnackBar(content: Text('Auto mode: could not listen for avatar changes')));
-          return;
-        }
-        _avatarChangeSub = oscInputHub.messages.listen((msg) {
-          if (msg.address != '/avatar/change') return;
-          if (msg.args.isEmpty || msg.args.first is! String) return;
-          _onAvatarChanged(msg.args.first as String);
-        });
-      });
-    } else {
-      if (!_avatarWatcherActive) return;
-      _avatarWatcherActive = false;
-      _avatarChangeSub?.cancel();
-      _avatarChangeSub = null;
-      oscInputHub.release();
-    }
-  }
-
-  void _onAvatarChanged(String avatarId) async {
-    final config = _config;
-    if (config == null) return;
-    if (config.activeProfile.avatarId == avatarId) return;
-
-    // snapshot profiles are static saves, never candidates for auto mode's
-    // avatar-based matching/creation.
-    final matchIndex = config.profiles.indexWhere((p) => !p.isSnapshot && p.avatarId == avatarId);
-    if (matchIndex != -1) {
-      _switchProfile(config.profiles[matchIndex].id);
-    } else {
-      final name = await _avatarProfileName(avatarId);
-      if (!mounted) return;
-      final profile = Profile(
-        id: DateTime.now().millisecondsSinceEpoch.toString(),
-        name: name,
-        avatarId: avatarId,
-      );
-      setState(() => config.profiles.add(profile));
-      _switchProfile(profile.id);
-    }
-
-    if (mounted) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('Auto mode: switched to "${config.activeProfile.name}"')));
-    }
-  }
-
-  // OSC only ever gives the avatar ID, not its name - looked up separately.
-  // suffix is always added, even with a real name, to avoid collisions.
-  Future<String> _avatarProfileName(String avatarId) async {
-    final suffix = _randomSuffix();
-    final realName = await _lookupAvatarName(avatarId);
-    if (realName != null && realName.isNotEmpty) return '$realName #$suffix';
-    final shortId = avatarId.length > 8 ? avatarId.substring(avatarId.length - 8) : avatarId;
-    return 'Avatar $shortId #$suffix';
-  }
-
-  Future<String?> _lookupAvatarName(String avatarId) async {
-    try {
-      final localAppData = Platform.environment['LOCALAPPDATA'];
-      if (localAppData == null) return null;
-      // LocalLow is a sibling of Local under AppData, not nested inside it.
-      final appData = Directory(localAppData).parent.path;
-      final oscDir = Directory('$appData\\LocalLow\\VRChat\\VRChat\\OSC');
-      if (!await oscDir.exists()) return null;
-      await for (final userDir in oscDir.list()) {
-        if (userDir is! Directory) continue;
-        final file = File('${userDir.path}\\Avatars\\$avatarId.json');
-        if (!await file.exists()) continue;
-        final json = jsonDecode(await file.readAsString());
-        if (json is Map<String, dynamic> && json['name'] is String) {
-          return json['name'] as String;
-        }
-      }
-    } catch (_) {
-      // caller falls back to the id-based name.
-    }
-    return null;
-  }
-
-  String _randomSuffix() {
-    const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
-    final rand = Random();
-    return List.generate(4, (_) => chars[rand.nextInt(chars.length)]).join();
-  }
-
-  Future<void> _persist() async {
-    if (_config != null) await ConfigStore.save(_config!);
-  }
-
-  void _onSliderChanged(ParamControl param, double value) {
-    _recordInteraction(param);
-    setState(() {
-      _values[param.name] = value;
-    });
-    _sliderTextControllers[param.name]?.text = formatParamNumber(value, _advancedMode);
-    // sent immediately on every change - no smoothing/rate limiting.
-    _sendSlider(param, value);
-  }
-
-  void _sendSlider(ParamControl param, double value) {
-    final address = oscAddressFor(param);
-    if (param.numericKind == NumericKind.int) {
-      _osc?.sendInt(address, value.round());
-    } else {
-      _osc?.sendFloat(address, value);
-    }
-  }
-
-  void _onSliderTextSubmitted(ParamControl param, String text) {
-    final value = double.tryParse(text);
-    if (value == null) {
-      // revert to last known-good value on unparsable input.
-      _sliderTextControllers[param.name]?.text =
-          formatParamNumber(_values[param.name] as double? ?? param.defaultValue, _advancedMode);
-      return;
-    }
-    _recordInteraction(param);
-    setState(() {
-      // no limiter on the value itself - the textbox never touches min/max,
-      // it only ever sets what gets sent. the slider thumb just clamps its
-      // own displayed position when the real value falls outside its range.
-      _values[param.name] = value;
-    });
-    // re-format to the current precision mode after a manual edit (the true
-    // value stored/sent above always keeps whatever precision was typed).
-    _sliderTextControllers[param.name]?.text = formatParamNumber(value, _advancedMode);
-    _sendSlider(param, value);
-  }
-
-  void _onToggleChanged(ParamControl param, bool value) {
-    _recordInteraction(param);
-    setState(() {
-      _values[param.name] = value;
-    });
-    _osc?.sendBool(oscAddressFor(param), value);
-  }
-
-  Future<void> _sendCustom(ParamControl param) async {
-    final text = _customValueControllers[param.name]?.text ?? param.customValueText;
-    try {
-      await _osc?.sendCustom(oscAddressFor(param), param.customTypeTag, text);
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Send failed: $e')));
-    }
-  }
-
-  // pushes a snapshot's saved values onto the active profile (a restore, not
-  // a switch) - parameters the profile is missing get added fresh with the
-  // snapshot's full definition, rather than silently skipped.
-  void _applySnapshot(Profile snapshot) {
-    final config = _config;
-    if (config == null) return;
-    setState(() {
-      for (final saved in snapshot.parameters) {
-        ParamControl? live;
-        for (final p in config.parameters) {
-          if (p.name == saved.name) {
-            live = p;
-            break;
-          }
-        }
-        if (live == null) {
-          live = ParamControl.fromJson(saved.toJson());
-          config.parameters.add(live);
-        }
-        if (live.type == ParamType.toggle) {
-          _values[live.name] = saved.defaultBool;
-          _osc?.sendBool(oscAddressFor(live), saved.defaultBool);
-        } else if (live.type == ParamType.slider) {
-          _values[live.name] = saved.defaultValue;
-          final controller = _sliderTextControllers[live.name];
-          if (controller != null) {
-            controller.text = formatParamNumber(saved.defaultValue, _advancedMode);
-          } else {
-            _sliderTextControllers[live.name] =
-                TextEditingController(text: formatParamNumber(saved.defaultValue, _advancedMode));
-          }
-          _sendSlider(live, saved.defaultValue);
-        }
-      }
-    });
-    _persist();
+  Future<void> _openSequenceEditor(AutomationSequence sequence) async {
+    final live = _live;
+    if (live == null) return;
+    await Navigator.of(context).push(MaterialPageRoute(builder: (_) => SequenceEditorPage(sequence: sequence, live: live)));
+    live.persist();
+    live.reconcile();
   }
 
   Future<void> _openSettings() async {
-    final config = _config;
-    if (config == null) return;
-    await Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) => SettingsPage(config: config, values: _values, onApplySnapshot: _applySnapshot),
-    ));
-    _reconcileAfterExternalEdit();
+    final live = _live;
+    if (live == null) return;
+    await Navigator.of(context).push(MaterialPageRoute(builder: (_) => SettingsPage(live: live)));
+    live.persist();
+    live.reconcile();
   }
 
   // sequences moved out of Settings into their own space since each one now
   // embeds a full parameter/automation panel - too much to bury in a scroll
-  // section. shares the same live values/controllers/OSC client as the main
-  // screen so editing a parameter there behaves identically to editing it here.
+  // section.
   Future<void> _openSequencesPage() async {
-    final config = _config;
-    if (config == null) return;
-    await Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) => SequencesPage(
-        config: config,
-        values: _values,
-        sliderTextControllers: _sliderTextControllers,
-        customValueControllers: _customValueControllers,
-        osc: _osc,
-        advancedMode: _advancedMode,
-        developerMode: config.developerMode,
-        onPersist: _persist,
-        onInteraction: _recordInteraction,
-      ),
-    ));
-    _reconcileAfterExternalEdit();
+    final live = _live;
+    if (live == null) return;
+    await Navigator.of(context).push(MaterialPageRoute(builder: (_) => SequencesPage(live: live)));
+    live.persist();
+    live.reconcile();
   }
 
-  // settings mutates the same AppConfig instance in place - no need to
-  // reread config.json, and a full _reload() would reset every parameter to
-  // its default. only add/drop entries that actually changed; everything
-  // else keeps its live value and controller untouched.
-  void _reconcileAfterExternalEdit() {
-    final config = _config;
-    if (config == null) return;
+  // ---- parameter actions ----
 
-    _osc?.dispose();
-    _osc = OscClient(host: config.host, port: config.port);
-    themeSettingsNotifier.value = ThemeSettings.fromConfig(config);
-    _startOrStopAvatarWatcher();
-
-    final currentNames = config.parameters.map((p) => p.name).toSet();
-    for (final key in _values.keys.toList()) {
-      if (!currentNames.contains(key)) {
-        _values.remove(key);
-        _sliderTextControllers.remove(key)?.dispose();
-        _customValueControllers.remove(key)?.dispose();
-      }
-    }
-
-    for (final p in config.parameters) {
-      final matchesSlider = p.type == ParamType.slider && _sliderTextControllers.containsKey(p.name);
-      final matchesCustom = p.type == ParamType.custom && _customValueControllers.containsKey(p.name);
-      final matchesToggle = p.type == ParamType.toggle && _values.containsKey(p.name);
-      if (matchesSlider || matchesCustom || matchesToggle) continue;
-
-      // new parameter, or one whose type changed - (re)initialize just this one.
-      _sliderTextControllers.remove(p.name)?.dispose();
-      _customValueControllers.remove(p.name)?.dispose();
-      switch (p.type) {
-        case ParamType.toggle:
-          _values[p.name] = p.defaultBool;
-        case ParamType.slider:
-          _values[p.name] = p.defaultValue;
-          _sliderTextControllers[p.name] = TextEditingController(text: formatParamNumber(p.defaultValue, _advancedMode));
-        case ParamType.custom:
-          _customValueControllers[p.name] = TextEditingController(text: p.customValueText);
-      }
-    }
-
-    setState(() {});
-  }
-
-  Future<void> _deleteParam(ParamControl param) async {
-    final config = _config;
-    if (config == null) return;
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Delete parameter?'),
-        content: Text('Remove "${param.label}" from the dashboard?'),
-        actions: [
-          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.of(context).pop(true), child: const Text('Delete')),
-        ],
-      ),
-    );
-    if (confirmed != true) return;
-    setState(() {
-      config.parameters.remove(param);
-      _sliderTextControllers.remove(param.name)?.dispose();
-      _customValueControllers.remove(param.name)?.dispose();
-      _values.remove(param.name);
-    });
-    _persist();
+  Future<void> _addParamManually() async {
+    final live = _live;
+    if (live == null) return;
+    final control = await showParamFormDialog(context, takenNames: {for (final p in live.parameters) p.name});
+    if (control == null) return;
+    live.addParam(control);
   }
 
   Future<void> _editParam(ParamControl param) async {
-    final result = await showParamFormDialog(context, existing: param);
+    final live = _live!;
+    final result = await showParamFormDialog(
+      context,
+      existing: param,
+      takenNames: {for (final p in live.parameters) p.name},
+    );
     if (result == null) return;
-    final config = _config;
-    if (config == null) return;
-    final index = config.parameters.indexOf(param);
-    if (index != -1) config.parameters[index] = result;
-    _persist();
-    // the edited param's name/type may have changed, so drop its old
-    // controller/value first - reconcile will reinitialize just that one and
-    // leave every other still-live parameter untouched.
-    _sliderTextControllers.remove(param.name)?.dispose();
-    _customValueControllers.remove(param.name)?.dispose();
-    _values.remove(param.name);
-    _reconcileAfterExternalEdit();
+    live.replaceParam(param, result);
   }
 
-  Future<void> _showContextMenu(BuildContext context, Offset globalPosition, ParamControl param) async {
+  Future<void> _deleteParam(ParamControl param) async {
+    final ok = await confirmDialog(
+      context,
+      title: 'Delete parameter?',
+      message: 'Remove "${param.label}" from this profile? Its automation goes with it.',
+    );
+    if (ok) _live?.removeParam(param);
+  }
+
+  Future<void> _showParamMenu(Offset globalPosition, ParamControl param) async {
+    final live = _live!;
     final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
     final selected = await showMenu<String>(
       context: context,
@@ -857,438 +412,513 @@ class _HomePageState extends State<HomePage> {
         overlay.size.height - globalPosition.dy,
       ),
       items: [
-        const PopupMenuItem(value: 'edit', child: Text('Edit')),
-        if (param.type != ParamType.custom) const PopupMenuItem(value: 'fetch', child: Text('Fetch value')),
-        const PopupMenuItem(value: 'delete', child: Text('Delete')),
+        const PopupMenuItem(value: 'edit', child: ListTile(leading: Icon(Icons.edit_outlined), title: Text('Edit'))),
+        const PopupMenuItem(
+          value: 'automation',
+          child: ListTile(leading: Icon(Icons.auto_awesome_outlined), title: Text('Automation...')),
+        ),
+        if (param.type != ParamType.custom)
+          const PopupMenuItem(
+            value: 'fetch',
+            child: ListTile(leading: Icon(Icons.download_outlined), title: Text('Fetch value from VRChat')),
+          ),
+        const PopupMenuItem(value: 'resend', child: ListTile(leading: Icon(Icons.replay), title: Text('Resend value'))),
+        const PopupMenuItem(
+          value: 'delete',
+          child: ListTile(leading: Icon(Icons.delete_outline), title: Text('Delete')),
+        ),
       ],
     );
-    if (selected == 'delete') {
-      await _deleteParam(param);
-    } else if (selected == 'edit') {
-      await _editParam(param);
-    } else if (selected == 'fetch') {
-      await _fetchValue(param);
+    if (!mounted) return;
+    switch (selected) {
+      case 'edit':
+        await _editParam(param);
+      case 'automation':
+        await _openAutomationDialog(param);
+      case 'fetch':
+        await _fetchValue(param);
+      case 'resend':
+        live.resend(param);
+      case 'delete':
+        await _deleteParam(param);
     }
   }
 
   // pulls the parameter's current live value from VRChat's OSCQuery tree and
   // snaps the local display to it - read-only, nothing is sent back over OSC.
   Future<void> _fetchValue(ParamControl param) async {
-    final messenger = ScaffoldMessenger.of(context);
-    final fetchTimeout = Duration(seconds: _config?.oscQueryFetchTimeoutSeconds ?? 5);
-    final result = await OscQueryClient.findVrchatInstances(
-      anyOscQueryService: _config?.developerMode ?? false,
-      timeout: fetchTimeout,
+    final live = _live!;
+    final value = await fetchLiveValue(
+      context,
+      param,
+      developerMode: live.config.developerMode,
+      timeout: Duration(seconds: live.config.oscQueryFetchTimeoutSeconds),
     );
-    if (!mounted) return;
-    if (result.instances.isEmpty) {
-      await showErrorDialog(context, 'No OSCQuery service found', result.error ?? oscNotFoundExplanation);
-      return;
-    }
-    final (host, port) = result.instances.first;
-    final Object? value;
-    try {
-      value = await OscQueryClient.fetchParameterValue(host, port, param.name, timeout: fetchTimeout);
-    } catch (e) {
-      if (!mounted) return;
-      await showErrorDialog(context, 'Could not fetch "${param.label}"', e.toString());
-      return;
-    }
-    if (!mounted) return;
-    if (value == null) {
-      await showErrorDialog(
-        context,
-        'Parameter not found',
-        'Could not find "${param.label}" on the avatar - it may not exist under that name.',
-      );
-      return;
-    }
-    _recordInteraction(param);
-    if (param.type == ParamType.toggle && value is bool) {
-      final boolValue = value;
-      setState(() => _values[param.name] = boolValue);
-    } else if (param.type == ParamType.slider && value is double) {
-      final doubleValue = value;
-      setState(() => _values[param.name] = doubleValue);
-      _sliderTextControllers[param.name]?.text = formatParamNumber(doubleValue, _advancedMode);
+    if (value == null || !mounted) return;
+    if ((param.type == ParamType.toggle && value is bool) || (param.type == ParamType.slider && value is double)) {
+      live.setLocalValue(param, value);
     } else {
-      messenger.showSnackBar(SnackBar(content: Text('"${param.label}" is a different type on the avatar - not applied.')));
+      _notice('"${param.label}" is a different type on the avatar - not applied.');
     }
   }
 
-  Future<void> _openDiscoverySheet(
-    List<DiscoveredParam> found, {
-    bool fetchFailed = false,
-    String? failureDetail,
-  }) async {
-    final config = _config;
-    if (config == null) return;
-    await showDiscoveryResultsSheet(
-      context,
-      found: found,
-      autoStartLive: fetchFailed,
-      fetchFailed: fetchFailed,
-      failureDetail: failureDetail,
-      developerMode: config.developerMode,
-      avatarChangeListenPort: config.port + 1,
-      noiseThreshold: config.liveParamNoiseThreshold,
-      existingNames: config.parameters.map((p) => p.name).toSet(),
-      onAdd: (control) => _addDiscoveredControl(config, control),
-    );
+  Future<void> _pullAllValues() async {
+    final live = _live;
+    if (live == null) return;
+    setState(() => _pulling = true);
+    try {
+      final found = await fetchAllLiveValues(
+        developerMode: live.config.developerMode,
+        timeout: Duration(seconds: live.config.oscQueryFetchTimeoutSeconds),
+      );
+      final count = live.applyReportedValues(found);
+      _notice(count == 0 ? 'Everything already matches VRChat.' : 'Updated $count parameters from VRChat.');
+    } catch (e) {
+      if (mounted) await showErrorDialog(context, 'Could not read values from VRChat', e.toString());
+    } finally {
+      if (mounted) setState(() => _pulling = false);
+    }
   }
 
   Future<void> _discover() async {
-    final devMode = _config?.developerMode ?? false;
-    // check the shortcut BEFORE running mDNS again (it has its own multi-
-    // second timeout, driven by the same OSCQuery fetch timeout setting) -
-    // otherwise "within 1s" would never actually be reachable, since that
-    // much time alone would already have passed by the time a second search
-    // finishes.
-    if (devMode &&
-        _lastDiscoverFailure != null &&
-        DateTime.now().difference(_lastDiscoverFailure!) <= const Duration(seconds: 1)) {
-      _lastDiscoverFailure = null;
-      await _openDiscoverySheet(const []);
-      return;
-    }
-
+    final live = _live;
+    if (live == null) return;
     setState(() => _discovering = true);
     try {
-      final fetchTimeout = Duration(seconds: _config?.oscQueryFetchTimeoutSeconds ?? 5);
-      final result = await OscQueryClient.findVrchatInstances(anyOscQueryService: devMode, timeout: fetchTimeout);
+      final result = await loadDiscovery(
+        developerMode: live.config.developerMode,
+        timeout: Duration(seconds: live.config.oscQueryFetchTimeoutSeconds),
+      );
       if (!mounted) return;
-      if (result.instances.isEmpty) {
-        _lastDiscoverFailure = devMode ? DateTime.now() : null;
-        await showErrorDialog(
-          context,
-          'No OSCQuery service found',
-          (result.error ?? oscNotFoundExplanation) +
-              (devMode ? '\n\nClick Discover again within 1s to bring up the add menu anyway (developer mode).' : ''),
-        );
-        return;
-      }
-      final (host, port) = result.instances.first;
-      List<DiscoveredParam> found;
-      var fetchFailed = false;
-      String? failureDetail;
-      try {
-        found = await OscQueryClient.fetchAvatarParameters(host, port, perAttemptTimeout: fetchTimeout);
-      } catch (e) {
-        // some avatars hang VRChat's OSCQuery server outright - fall back to
-        // building the list from live OSC traffic instead.
-        found = const [];
-        fetchFailed = true;
-        failureDetail = e.toString();
-      }
-      if (!mounted) return;
-      await _openDiscoverySheet(found, fetchFailed: fetchFailed, failureDetail: failureDetail);
+      setState(() => _discovering = false);
+      await showDiscoveryResultsSheet(
+        context,
+        result: result,
+        noiseThreshold: live.config.liveParamNoiseThreshold,
+        existingNames: {for (final p in live.parameters) p.name},
+        onAdd: live.addParam,
+      );
     } catch (e) {
-      if (!mounted) return;
-      await showErrorDialog(context, 'Discovery failed', e.toString());
+      if (mounted) await showErrorDialog(context, 'Discovery failed', e.toString());
     } finally {
       if (mounted) setState(() => _discovering = false);
     }
   }
 
-  void _addDiscoveredControl(AppConfig config, ParamControl control) {
-    config.parameters.add(control);
-    _values[control.name] = control.type == ParamType.toggle ? control.defaultBool : control.defaultValue;
-    if (control.type == ParamType.slider) {
-      _sliderTextControllers[control.name] =
-          TextEditingController(text: formatParamNumber(control.defaultValue, _advancedMode));
-    } else if (control.type == ParamType.custom) {
-      _customValueControllers[control.name] = TextEditingController(text: control.customValueText);
+  Future<void> _onMenu(String value) async {
+    final live = _live;
+    switch (value) {
+      case 'pull':
+        await _pullAllValues();
+      case 'resend':
+        if (live == null) return;
+        for (final p in live.parameters) {
+          if (p.type != ParamType.custom) live.resend(p);
+        }
+        _notice('Resent ${live.parameters.where((p) => p.type != ParamType.custom).length} values.');
+      case 'reload':
+        await _load();
+        _notice('Reloaded config.json');
+      case 'folder':
+        await launchUrl(Uri.directory(ConfigStore.directory));
     }
-    ConfigStore.save(config);
-    setState(() {});
   }
 
-  @override
-  void dispose() {
-    _engineTimer?.cancel();
-    _osc?.dispose();
-    _avatarChangeSub?.cancel();
-    if (_avatarWatcherActive) {
-      _avatarWatcherActive = false;
-      oscInputHub.release();
-    }
-    _searchController.dispose();
-    _disposeControllers();
-    super.dispose();
-  }
+  // ---- build ----
 
   @override
   Widget build(BuildContext context) {
+    final live = _live;
     return Scaffold(
       appBar: AppBar(
-        title: _config == null
-            ? const Text('OSCSlider')
-            : PopupMenuButton<String>(
-                tooltip: 'Switch profile',
-                onSelected: _switchProfile,
-                itemBuilder: (context) => [
-                  // snapshot profiles aren't selectable as the active
-                  // profile - only regular profiles show up here.
-                  for (final p in _config!.profiles.where((p) => !p.isSnapshot))
-                    PopupMenuItem(
-                      value: p.id,
-                      child: Row(
-                        children: [
-                          SizedBox(
-                            width: 24,
-                            child: p.id == _config!.activeProfileId ? const Icon(Icons.check, size: 18) : null,
-                          ),
-                          Text(p.name),
-                        ],
-                      ),
-                    ),
-                ],
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Flexible(child: Text(_config!.activeProfile.name, overflow: TextOverflow.ellipsis)),
-                    const Icon(Icons.arrow_drop_down),
-                  ],
-                ),
-              ),
+        title: live == null ? const Text('OSCSlider') : _buildProfileSwitcher(live),
         actions: [
+          if (live != null) ConnectionChip(live: live),
           IconButton(
             icon: _discovering
-                ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
+                ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
                 : const Icon(Icons.wifi_find),
-            tooltip: 'Discover parameters from running VRChat (OSCQuery)',
-            onPressed: _discovering ? null : _discover,
-          ),
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            tooltip: 'Reload config.json',
-            onPressed: _reload,
+            tooltip: 'Discover parameters from VRChat',
+            onPressed: _discovering || live == null ? null : _discover,
           ),
           IconButton(
             icon: const Icon(Icons.playlist_play),
             tooltip: 'Sequences',
-            onPressed: _config == null ? null : _openSequencesPage,
+            onPressed: live == null ? null : _openSequencesPage,
           ),
           IconButton(
-            icon: const Icon(Icons.settings),
+            icon: const Icon(Icons.settings_outlined),
             tooltip: 'Settings',
-            onPressed: _config == null ? null : _openSettings,
+            onPressed: live == null ? null : _openSettings,
+          ),
+          PopupMenuButton<String>(
+            tooltip: 'More',
+            enabled: live != null,
+            onSelected: _onMenu,
+            itemBuilder: (context) => [
+              PopupMenuItem(
+                value: 'pull',
+                enabled: !_pulling,
+                child: const ListTile(
+                  leading: Icon(Icons.download_outlined),
+                  title: Text('Pull current values from VRChat'),
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'resend',
+                child: ListTile(leading: Icon(Icons.upload_outlined), title: Text('Resend all values')),
+              ),
+              const PopupMenuDivider(),
+              const PopupMenuItem(
+                value: 'reload',
+                child: ListTile(leading: Icon(Icons.refresh), title: Text('Reload config.json')),
+              ),
+              const PopupMenuItem(
+                value: 'folder',
+                child: ListTile(leading: Icon(Icons.folder_open_outlined), title: Text('Open config folder')),
+              ),
+            ],
           ),
         ],
       ),
-      body: _buildBody(context),
+      floatingActionButton: live == null
+          ? null
+          : ListenableBuilder(
+              listenable: live,
+              // the empty state has its own add button.
+              builder: (context, _) => live.parameters.isEmpty
+                  ? const SizedBox.shrink()
+                  : FloatingActionButton.extended(
+                      onPressed: _addParamManually,
+                      icon: const Icon(Icons.add),
+                      label: const Text('Add parameter'),
+                    ),
+            ),
+      body: Column(
+        children: [
+          ValueListenableBuilder<String?>(
+            valueListenable: ConfigStore.lastSaveError,
+            builder: (context, error, _) => error == null
+                ? const SizedBox.shrink()
+                : MaterialBanner(
+                    backgroundColor: Theme.of(context).colorScheme.errorContainer,
+                    leading: const Icon(Icons.save_outlined),
+                    content: Text('Couldn\'t save config.json - changes may be lost.\n$error'),
+                    actions: [
+                      TextButton(onPressed: () => _live?.persist(), child: const Text('Retry')),
+                    ],
+                  ),
+          ),
+          Expanded(child: _buildBody(context)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildProfileSwitcher(LiveController live) {
+    return ListenableBuilder(
+      listenable: live,
+      builder: (context, _) => PopupMenuButton<String>(
+        tooltip: 'Switch profile',
+        onSelected: (id) {
+          if (id == '__manage') {
+            _openSettings();
+          } else {
+            live.switchProfile(id);
+          }
+        },
+        itemBuilder: (context) => [
+          // snapshot profiles aren't selectable as the active profile.
+          for (final p in live.config.profiles.where((p) => !p.isSnapshot))
+            PopupMenuItem(
+              value: p.id,
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: 28,
+                    child: p.id == live.config.activeProfileId ? const Icon(Icons.check, size: 18) : null,
+                  ),
+                  Flexible(child: Text(p.name, overflow: TextOverflow.ellipsis)),
+                  if (p.avatarId != null) ...[
+                    const SizedBox(width: 6),
+                    const Icon(Icons.link, size: 14),
+                  ],
+                ],
+              ),
+            ),
+          const PopupMenuDivider(),
+          const PopupMenuItem(value: '__manage', child: Text('Manage profiles...')),
+        ],
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Flexible(child: Text(live.config.activeProfile.name, overflow: TextOverflow.ellipsis)),
+            const Icon(Icons.arrow_drop_down),
+          ],
+        ),
+      ),
     );
   }
 
   Widget _buildBody(BuildContext context) {
-    if (_error != null) {
-      return Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          crossAxisAlignment: CrossAxisAlignment.start,
+    final loadError = _loadError;
+    if (loadError != null) return _buildLoadError(context, loadError);
+
+    final live = _live;
+    if (live == null) return const Center(child: CircularProgressIndicator());
+
+    return ListenableBuilder(
+      listenable: live,
+      builder: (context, _) {
+        final config = live.config;
+        if (config.parameters.isEmpty) return _buildEmpty(context);
+
+        final query = _searchQuery.toLowerCase();
+        final filtered = query.isEmpty
+            ? config.parameters
+            : config.parameters
+                .where((p) =>
+                    p.label.toLowerCase().contains(query) ||
+                    p.name.toLowerCase().contains(query) ||
+                    (p.category?.toLowerCase().contains(query) ?? false))
+                .toList();
+
+        return Column(
           children: [
-            Text('Failed to load config.json', style: Theme.of(context).textTheme.titleLarge),
-            const SizedBox(height: 8),
-            SelectableText(_error!),
-            const SizedBox(height: 8),
-            SelectableText('Config path: ${ConfigStore.path}'),
-            const SizedBox(height: 16),
-            FilledButton(onPressed: _reload, child: const Text('Retry')),
-          ],
-        ),
-      );
-    }
-
-    final config = _config;
-    if (config == null) {
-      return const Center(child: CircularProgressIndicator());
-    }
-
-    if (config.parameters.isEmpty) {
-      return Padding(
-        padding: const EdgeInsets.all(24),
-        child: Text(
-          'No parameters configured. Tap the discover icon while VRChat is running, '
-          'or open Settings to add one manually.',
-          style: Theme.of(context).textTheme.bodyLarge,
-        ),
-      );
-    }
-
-    final query = _searchQuery.toLowerCase();
-    final filtered = query.isEmpty
-        ? config.parameters
-        : config.parameters
-            .where((p) => p.label.toLowerCase().contains(query) || p.name.toLowerCase().contains(query))
-            .toList();
-
-    return Column(
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-          child: Row(
-            children: [
-              Expanded(
-                child: SearchBar(
-                  controller: _searchController,
-                  hintText: 'Search parameters',
-                  leading: const Icon(Icons.search),
-                  trailing: _searchQuery.isEmpty
-                      ? null
-                      : [
-                          IconButton(
-                            icon: const Icon(Icons.clear),
-                            onPressed: () {
-                              _searchController.clear();
-                              setState(() => _searchQuery = '');
-                            },
-                          ),
-                        ],
-                  onChanged: (v) => setState(() => _searchQuery = v),
-                ),
-              ),
-              if (config.showAutomationMasterSwitch) ...[
-                const SizedBox(width: 8),
-                Tooltip(
-                  message: 'Automation Master Switch - flips every automation it covers at once',
-                  child: Switch(
-                    value: automationMasterSwitchAggregate(config),
-                    onChanged: (v) {
-                      setState(() => applyAutomationMasterSwitch(config, v));
-                      _persist();
-                    },
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: SearchBar(
+                      controller: _searchController,
+                      hintText: 'Search parameters',
+                      leading: const Icon(Icons.search),
+                      elevation: const WidgetStatePropertyAll(0),
+                      trailing: _searchQuery.isEmpty
+                          ? null
+                          : [
+                              IconButton(
+                                icon: const Icon(Icons.clear),
+                                onPressed: () {
+                                  _searchController.clear();
+                                  setState(() => _searchQuery = '');
+                                },
+                              ),
+                            ],
+                      onChanged: (v) => setState(() => _searchQuery = v),
+                    ),
                   ),
-                ),
-              ],
-            ],
-          ),
-        ),
-        Expanded(
-          child: filtered.isEmpty
-              ? const Center(child: Text('No parameters match your search.'))
-              : ListView(
-                  padding: const EdgeInsets.all(16),
-                  children: _buildGroupedList(context, filtered),
-                ),
-        ),
-      ],
+                  if (config.showAutomationMasterSwitch) ...[
+                    const SizedBox(width: 8),
+                    Tooltip(
+                      message: 'Automation Master Switch - flips every automation it covers at once',
+                      child: Switch(
+                        value: automationMasterSwitchAggregate(config),
+                        onChanged: (v) {
+                          applyAutomationMasterSwitch(config, v);
+                          live.persist();
+                          live.reconcile();
+                        },
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            Expanded(
+              child: filtered.isEmpty
+                  ? const Center(child: Text('No parameters match your search.'))
+                  : _buildGrid(context, live, filtered),
+            ),
+          ],
+        );
+      },
     );
   }
 
-  List<Widget> _buildGroupedList(BuildContext context, List<ParamControl> params) {
-    // default is no categories: uncategorized params render as a flat list
-    // with no headers at all. named categories get a header + their items.
+  Widget _buildGrid(BuildContext context, LiveController live, List<ParamControl> params) {
+    // default is no categories: uncategorized params render with no header
+    // at all. named categories get a collapsible header + their items.
     final uncategorized = <ParamControl>[];
     final byCategory = <String, List<ParamControl>>{};
     for (final p in params) {
-      if (p.category == null || p.category!.isEmpty) {
+      final c = p.category;
+      if (c == null || c.isEmpty) {
         uncategorized.add(p);
       } else {
-        byCategory.putIfAbsent(p.category!, () => []).add(p);
+        byCategory.putIfAbsent(c, () => []).add(p);
       }
     }
 
-    final widgets = <Widget>[];
-    for (final p in uncategorized) {
-      widgets.add(_buildParamCard(context, p));
-    }
-    for (final entry in byCategory.entries) {
-      widgets.add(Padding(
-        padding: const EdgeInsets.only(top: 16, bottom: 4),
-        child: Text(entry.key, style: Theme.of(context).textTheme.titleMedium),
-      ));
-      for (final p in entry.value) {
-        widgets.add(_buildParamCard(context, p));
-      }
-    }
-    return widgets;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        const spacing = 12.0;
+        const minCardWidth = 340.0;
+        final width = constraints.maxWidth - 32;
+        // as many columns as fit - a wide window shouldn't be one long
+        // stretched-out list.
+        final columns = max(1, ((width + spacing) / (minCardWidth + spacing)).floor());
+        final cardWidth = (width - spacing * (columns - 1)) / columns;
+
+        Widget wrap(List<ParamControl> items) => Wrap(
+              spacing: spacing,
+              runSpacing: spacing,
+              children: [
+                for (final p in items)
+                  SizedBox(
+                    width: cardWidth,
+                    child: ParamCard(
+                      key: ValueKey('card:${p.name}'),
+                      param: p,
+                      live: live,
+                      automationButton: p.type == ParamType.custom ? null : _automationButton(p),
+                      onMenu: (pos) => _showParamMenu(pos, p),
+                    ),
+                  ),
+              ],
+            );
+
+        return ListView(
+          // room under the last card for the floating add button.
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 96),
+          children: [
+            if (uncategorized.isNotEmpty) wrap(uncategorized),
+            for (final entry in byCategory.entries) ...[
+              _categoryHeader(context, entry.key, entry.value.length),
+              if (!_collapsedCategories.contains(entry.key)) wrap(entry.value),
+            ],
+          ],
+        );
+      },
+    );
   }
 
-  Widget _buildParamCard(BuildContext context, ParamControl param) {
-    Widget child;
-    switch (param.type) {
-      case ParamType.toggle:
-        final value = _values[param.name] as bool? ?? param.defaultBool;
-        child = Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+  Widget _categoryHeader(BuildContext context, String name, int count) {
+    final collapsed = _collapsedCategories.contains(name);
+    return Padding(
+      padding: const EdgeInsets.only(top: 16, bottom: 8),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: () => setState(() => collapsed ? _collapsedCategories.remove(name) : _collapsedCategories.add(name)),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
           child: Row(
             children: [
-              Expanded(child: Text(param.label, style: Theme.of(context).textTheme.titleMedium)),
-              _automationButton(param),
-              Switch(value: value, onChanged: (v) => _onToggleChanged(param, v)),
+              Icon(collapsed ? Icons.chevron_right : Icons.expand_more),
+              const SizedBox(width: 4),
+              Text(name, style: Theme.of(context).textTheme.titleMedium),
+              const SizedBox(width: 8),
+              Text('$count', style: Theme.of(context).textTheme.bodySmall),
+              const SizedBox(width: 12),
+              const Expanded(child: Divider()),
             ],
           ),
-        );
-      case ParamType.custom:
-        final controller = _customValueControllers[param.name];
-        child = Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          child: Row(
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(param.label, style: Theme.of(context).textTheme.titleMedium),
-                    Text('custom - type "${param.customTypeTag}"',
-                        style: Theme.of(context).textTheme.bodySmall),
-                  ],
-                ),
-              ),
-              SizedBox(
-                width: 140,
-                child: TextField(controller: controller, decoration: const InputDecoration(isDense: true)),
-              ),
-              IconButton(icon: const Icon(Icons.send), onPressed: () => _sendCustom(param)),
-            ],
-          ),
-        );
-      case ParamType.slider:
-        final value = _values[param.name] as double? ?? param.defaultValue;
-        final textController = _sliderTextControllers[param.name];
-        child = Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildEmpty(BuildContext context) {
+    final theme = Theme.of(context);
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 440),
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
             children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              Icon(Icons.tune, size: 48, color: theme.colorScheme.primary),
+              const SizedBox(height: 16),
+              Text('No parameters yet', style: theme.textTheme.titleLarge),
+              const SizedBox(height: 8),
+              Text(
+                'With VRChat running (and OSC enabled), Discover lists your current avatar\'s '
+                'parameters. You can also add any OSC address by hand.',
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodyMedium,
+              ),
+              const SizedBox(height: 20),
+              Wrap(
+                spacing: 12,
+                runSpacing: 8,
+                alignment: WrapAlignment.center,
                 children: [
-                  Expanded(child: Text(param.label, style: Theme.of(context).textTheme.titleMedium)),
-                  _automationButton(param),
-                  SizedBox(
-                    width: 90,
-                    child: TextField(
-                      controller: textController,
-                      textAlign: TextAlign.end,
-                      keyboardType: const TextInputType.numberWithOptions(signed: true, decimal: true),
-                      decoration: const InputDecoration(isDense: true),
-                      onSubmitted: (text) => _onSliderTextSubmitted(param, text),
-                    ),
+                  FilledButton.icon(
+                    onPressed: _discovering ? null : _discover,
+                    icon: const Icon(Icons.wifi_find),
+                    label: const Text('Discover from VRChat'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: _addParamManually,
+                    icon: const Icon(Icons.edit_note),
+                    label: const Text('Add by hand'),
                   ),
                 ],
               ),
-              Slider(
-                value: value.clamp(param.min, param.max),
-                min: param.min,
-                max: param.max,
-                onChanged: (v) => _onSliderChanged(param, v),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLoadError(BuildContext context, ConfigLoadException error) {
+    final theme = Theme.of(context);
+    return Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 560),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(Icons.warning_amber_rounded, size: 40, color: theme.colorScheme.error),
+              const SizedBox(height: 12),
+              Text('config.json couldn\'t be loaded', style: theme.textTheme.titleLarge),
+              const SizedBox(height: 8),
+              SelectableText(error.message),
+              const SizedBox(height: 8),
+              SelectableText('Config path: ${ConfigStore.path}', style: theme.textTheme.bodySmall),
+              const SizedBox(height: 16),
+              Text(
+                'Nothing has been overwritten. Fix the file and retry, or pick one of the options below - '
+                'the broken file is kept next to it either way.',
+                style: theme.textTheme.bodyMedium,
+              ),
+              const SizedBox(height: 16),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  FilledButton(onPressed: _load, child: const Text('Retry')),
+                  if (error.backupAvailable)
+                    FilledButton.tonal(
+                      onPressed: () => _load(loader: ConfigStore.restoreBackup),
+                      child: const Text('Restore last working config'),
+                    ),
+                  OutlinedButton(
+                    onPressed: () async {
+                      final ok = await confirmDialog(
+                        context,
+                        title: 'Start fresh?',
+                        message: 'The broken config.json is renamed (not deleted) and a new empty one is created.',
+                        confirmLabel: 'Start fresh',
+                      );
+                      if (ok) await _load(loader: ConfigStore.startFresh);
+                    },
+                    child: const Text('Start fresh'),
+                  ),
+                  TextButton(
+                    onPressed: () => launchUrl(Uri.directory(ConfigStore.directory)),
+                    child: const Text('Open folder'),
+                  ),
+                ],
               ),
             ],
           ),
-        );
-    }
-
-    return GestureDetector(
-      onSecondaryTapDown: (details) => _showContextMenu(context, details.globalPosition, param),
-      child: Card(
-        margin: const EdgeInsets.symmetric(vertical: 8),
-        child: child,
+        ),
       ),
     );
   }

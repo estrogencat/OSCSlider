@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 
 import 'param_control.dart';
 
@@ -26,6 +27,26 @@ class ThemeSettings {
       error: config.errorOverride,
     );
   }
+
+  // value equality, so re-applying an unchanged theme doesn't rebuild the
+  // whole app.
+  @override
+  bool operator ==(Object other) =>
+      other is ThemeSettings &&
+      other.seed.toARGB32() == seed.toARGB32() &&
+      other.primary?.toARGB32() == primary?.toARGB32() &&
+      other.secondary?.toARGB32() == secondary?.toARGB32() &&
+      other.tertiary?.toARGB32() == tertiary?.toARGB32() &&
+      other.error?.toARGB32() == error?.toARGB32();
+
+  @override
+  int get hashCode => Object.hash(
+        seed.toARGB32(),
+        primary?.toARGB32(),
+        secondary?.toARGB32(),
+        tertiary?.toARGB32(),
+        error?.toARGB32(),
+      );
 
   ColorScheme buildScheme() {
     var scheme = ColorScheme.fromSeed(seedColor: seed, brightness: Brightness.dark);
@@ -76,3 +97,15 @@ class ThemeSettings {
 // shared across the app so Settings can retheme the running MaterialApp live.
 final ValueNotifier<ThemeSettings> themeSettingsNotifier =
     ValueNotifier(const ThemeSettings(seed: defaultThemeSeedColor));
+
+/// applies [config]'s theme - deferred to after the current frame when
+/// called mid-build, since the notifier rebuilds MaterialApp itself.
+void applyThemeFromConfig(AppConfig config) {
+  final next = ThemeSettings.fromConfig(config);
+  if (next == themeSettingsNotifier.value) return;
+  if (SchedulerBinding.instance.schedulerPhase == SchedulerPhase.persistentCallbacks) {
+    SchedulerBinding.instance.addPostFrameCallback((_) => themeSettingsNotifier.value = ThemeSettings.fromConfig(config));
+  } else {
+    themeSettingsNotifier.value = next;
+  }
+}
