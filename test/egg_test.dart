@@ -5,7 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:osc_slider/config_store.dart';
 import 'package:osc_slider/main.dart';
-import 'package:osc_slider/no_signal.dart';
+import 'package:osc_slider/egg.dart';
 import 'package:osc_slider/param_control.dart';
 
 Future<void> _pump(WidgetTester tester) async {
