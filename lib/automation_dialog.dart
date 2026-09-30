@@ -413,6 +413,7 @@ class _AutomationDialogState extends State<AutomationDialog> {
                 ),
               const SizedBox(height: 8),
               DropdownButtonFormField<_UnifiedKind>(
+                isExpanded: true,
                 initialValue: _kind,
                 decoration: const InputDecoration(labelText: 'Type'),
                 items: [
@@ -525,6 +526,7 @@ class _AutomationDialogState extends State<AutomationDialog> {
         ),
         const SizedBox(height: 8),
         DropdownButtonFormField<RampRepeat>(
+          isExpanded: true,
           initialValue: _rampRepeat,
           decoration: const InputDecoration(labelText: 'Repeat'),
           items: const [
@@ -553,6 +555,7 @@ class _AutomationDialogState extends State<AutomationDialog> {
         ],
         const SizedBox(height: 8),
         DropdownButtonFormField<EasingKind>(
+          isExpanded: true,
           initialValue: _easing,
           decoration: const InputDecoration(labelText: 'Easing'),
           items: const [

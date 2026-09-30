@@ -52,11 +52,22 @@ static void my_application_activate(GApplication* application) {
     gtk_window_set_title(window, "OSCSlider");
   }
 
-  gtk_window_set_default_size(window, 1280, 720);
-  // below this the title bar actions stop fitting.
+  // on a small screen, open smaller instead of partly off-screen.
+  gint width = 1280, height = 720;
+  GdkDisplay* display = gdk_display_get_default();
+  GdkMonitor* monitor = display != nullptr ? gdk_display_get_primary_monitor(display) : nullptr;
+  if (monitor == nullptr && display != nullptr) monitor = gdk_display_get_monitor(display, 0);
+  if (monitor != nullptr) {
+    GdkRectangle work;
+    gdk_monitor_get_workarea(monitor, &work);
+    width = MIN(width, (gint)(work.width * 0.95));
+    height = MIN(height, (gint)(work.height * 0.95));
+  }
+  gtk_window_set_default_size(window, width, height);
+  // the layout adapts down to phone width.
   GdkGeometry hints = {};
-  hints.min_width = 480;
-  hints.min_height = 400;
+  hints.min_width = 360;
+  hints.min_height = 360;
   gtk_window_set_geometry_hints(window, nullptr, &hints, GDK_HINT_MIN_SIZE);
   // the bundled icon works without installing anything; the themed name is
   // a fallback for when install.sh has put it into the icon theme.

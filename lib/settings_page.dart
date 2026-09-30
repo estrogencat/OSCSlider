@@ -764,7 +764,7 @@ class _SettingsPageState extends State<SettingsPage> {
             hintText: '${config.port + 1} (send port + 1)',
             helperText: 'Only used for OSC software without OSCQuery - VRChat doesn\'t need it. Change it if '
                 'you launch VRChat with a custom --osc output port.',
-            helperMaxLines: 2,
+            helperMaxLines: 4,
             errorText: _listenPortError,
           ),
           onSubmitted: _setListenPort,
@@ -950,7 +950,7 @@ class _SettingsPageState extends State<SettingsPage> {
             helperText: 'In the discover popup\'s "highlight active" mode, a parameter that keeps changing at '
                 'least this often for several seconds is treated as noise and stops jumping to the top '
                 '(0 = never filter).',
-            helperMaxLines: 3,
+            helperMaxLines: 4,
           ),
           onSubmitted: _setLiveParamNoiseThreshold,
           onTapOutside: (_) {
@@ -968,7 +968,7 @@ class _SettingsPageState extends State<SettingsPage> {
               helperText: 'How long Discover waits on VRChat\'s OSCQuery server for the full parameter '
                   'list before falling back. Some avatars make VRChat hang on this outright, so lower it '
                   'to fall back faster.',
-              helperMaxLines: 3,
+              helperMaxLines: 4,
             ),
             onSubmitted: _setOscQueryFetchTimeout,
             onTapOutside: (_) {

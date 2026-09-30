@@ -497,6 +497,7 @@ class _SequenceEditorPageState extends State<SequenceEditorPage> {
                         children: [
                           Expanded(
                             child: DropdownButtonFormField<SequenceRepeatMode>(
+                              isExpanded: true,
                               initialValue: seq.repeatMode,
                               decoration: const InputDecoration(labelText: 'Repeat'),
                               items: const [
@@ -770,6 +771,7 @@ class _StepDialogState extends State<_StepDialog> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             DropdownButtonFormField<SequenceStepKind>(
+              isExpanded: true,
               initialValue: _kind,
               decoration: const InputDecoration(labelText: 'Step type'),
               items: [

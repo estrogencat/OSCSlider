@@ -127,9 +127,18 @@ class _TourState extends State<_Tour> {
     final position = shown.indexOf(_index);
 
     final cardWidth = min(400.0, size.width - 32);
+    const gap = 14.0, margin = 12.0;
+    // the card goes on the roomier side of the target, and is capped to fit
+    // there (its text scrolls). if neither side has room it goes over the
+    // middle of the screen, so the buttons are never off-screen.
+    final spaceBelow = hole == null ? 0.0 : size.height - hole.bottom - gap - margin;
+    final spaceAbove = hole == null ? 0.0 : hole.top - gap - margin;
+    final fitsBeside = hole != null && max(spaceBelow, spaceAbove) >= 210;
+    final maxHeight = fitsBeside ? max(spaceBelow, spaceAbove) : size.height - 2 * margin;
     final card = _TourCard(
       step: step,
       width: cardWidth,
+      maxHeight: maxHeight,
       position: position,
       count: shown.length,
       isFirst: isFirst,
@@ -140,14 +149,13 @@ class _TourState extends State<_Tour> {
     );
 
     Widget placed;
-    if (hole == null) {
+    if (!fitsBeside) {
       placed = Center(child: card);
     } else {
-      final below = size.height - hole.bottom;
       final left = (hole.center.dx - cardWidth / 2).clamp(16.0, max(16.0, size.width - cardWidth - 16)).toDouble();
-      placed = below >= hole.top
-          ? Positioned(left: left, top: hole.bottom + 14, child: card)
-          : Positioned(left: left, bottom: size.height - hole.top + 14, child: card);
+      placed = spaceBelow >= spaceAbove
+          ? Positioned(left: left, top: hole.bottom + gap, child: card)
+          : Positioned(left: left, bottom: size.height - hole.top + gap, child: card);
     }
 
     return Focus(
@@ -187,6 +195,7 @@ class _TourState extends State<_Tour> {
 class _TourCard extends StatelessWidget {
   final TourStep step;
   final double width;
+  final double maxHeight;
   final int position;
   final int count;
   final bool isFirst;
@@ -198,6 +207,7 @@ class _TourCard extends StatelessWidget {
   const _TourCard({
     required this.step,
     required this.width,
+    required this.maxHeight,
     required this.position,
     required this.count,
     required this.isFirst,
@@ -211,8 +221,8 @@ class _TourCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
-    return SizedBox(
-      width: width,
+    return ConstrainedBox(
+      constraints: BoxConstraints.tightFor(width: width).copyWith(maxHeight: maxHeight),
       child: Card(
         elevation: 8,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
@@ -234,7 +244,11 @@ class _TourCard extends StatelessWidget {
                 ],
               ),
               const SizedBox(height: 12),
-              Text(step.body, style: theme.textTheme.bodyLarge?.copyWith(height: 1.4)),
+              Flexible(
+                child: SingleChildScrollView(
+                  child: Text(step.body, style: theme.textTheme.bodyLarge?.copyWith(height: 1.4)),
+                ),
+              ),
               const SizedBox(height: 16),
               // progress dots
               Row(

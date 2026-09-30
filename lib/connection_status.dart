@@ -22,7 +22,10 @@ int? portMismatch(LiveController live, LinkStatus status) {
 /// traffic arriving, VRChat's OSCQuery service answering, and send errors.
 class ConnectionChip extends StatelessWidget {
   final LiveController live;
-  const ConnectionChip({super.key, required this.live});
+  // just the status dot, for narrow windows.
+  final bool compact;
+
+  const ConnectionChip({super.key, required this.live, this.compact = false});
 
   @override
   Widget build(BuildContext context) {
@@ -36,22 +39,34 @@ class ConnectionChip extends StatelessWidget {
         final (Color color, String label, String tooltip) = sendError != null
             ? (scheme.error, 'Send error', sendError)
             : mismatch != null
-                ? (Colors.amber, 'Port mismatch', 'VRChat listens on port $mismatch, but you\'re sending to ${live.config.port}')
-                : status.receiving
-                    ? (Colors.green, 'VRChat', 'Receiving OSC from VRChat')
-                    : status.vrchat != null
-                        ? (Colors.green, 'VRChat', 'VRChat found (OSCQuery) - no parameter changes received yet')
-                        : (scheme.outline, 'Not detected', 'VRChat not detected yet - is OSC enabled in VRChat?');
+            ? (
+                Colors.amber,
+                'Port mismatch',
+                'VRChat listens on port $mismatch, but you\'re sending to ${live.config.port}',
+              )
+            : status.receiving
+            ? (Colors.green, 'VRChat', 'Receiving OSC from VRChat')
+            : status.vrchat != null
+            ? (Colors.green, 'VRChat', 'VRChat found (OSCQuery) - no parameter changes received yet')
+            : (scheme.outline, 'Not detected', 'VRChat not detected yet - is OSC enabled in VRChat?');
+        final dot = Container(
+          width: compact ? 14 : 10,
+          height: compact ? 14 : 10,
+          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+        );
+        if (compact) {
+          return IconButton(
+            tooltip: '$label - $tooltip',
+            icon: dot,
+            onPressed: () => showConnectionDetails(context, live),
+          );
+        }
         return Padding(
           padding: const EdgeInsets.symmetric(horizontal: 4),
           child: Tooltip(
             message: tooltip,
             child: ActionChip(
-              avatar: Container(
-                width: 10,
-                height: 10,
-                decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-              ),
+              avatar: dot,
               label: Text(label),
               visualDensity: VisualDensity.compact,
               onPressed: () => showConnectionDetails(context, live),
@@ -77,37 +92,37 @@ Future<void> showConnectionDetails(BuildContext context, LiveController live) {
         final theme = Theme.of(context);
 
         Widget row(IconData icon, String title, String body, {Color? color, Widget? action}) => Padding(
-              padding: const EdgeInsets.symmetric(vertical: 6),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Icon(icon, size: 20, color: color ?? theme.colorScheme.onSurfaceVariant),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(title, style: theme.textTheme.titleSmall),
-                        SelectableText(body, style: theme.textTheme.bodySmall),
-                        ?action,
-                      ],
-                    ),
-                  ),
-                ],
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(icon, size: 20, color: color ?? theme.colorScheme.onSurfaceVariant),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title, style: theme.textTheme.titleSmall),
+                    SelectableText(body, style: theme.textTheme.bodySmall),
+                    ?action,
+                  ],
+                ),
               ),
-            );
+            ],
+          ),
+        );
 
         final receiving = status.receiving
             ? (status.viaOscQuery
-                ? 'Receiving VRChat\'s output via OSCQuery (port ${service?.oscPort}) - shared nicely with any other OSC apps.'
-                : 'Receiving on port ${oscInputHub.legacyPort} (the classic fixed port).')
+                  ? 'Receiving VRChat\'s output via OSCQuery (port ${service?.oscPort}) - shared nicely with any other OSC apps.'
+                  : 'Receiving on port ${oscInputHub.legacyPort} (the classic fixed port).')
             : 'Nothing received yet. VRChat only sends when a parameter changes.';
 
         final oscQueryLine = service == null
             ? 'Not started.'
             : service.isAdvertising
-                ? 'Advertised as "${service.instanceName}" - VRChat sends its output to port ${service.oscPort}.'
-                : 'Not fully running:\n${service.error ?? 'unknown error'}';
+            ? 'Advertised as "${service.instanceName}" - VRChat sends its output to port ${service.oscPort}.'
+            : 'Not fully running:\n${service.error ?? 'unknown error'}';
 
         return AlertDialog(
           title: const Text('Connection'),
@@ -129,9 +144,9 @@ Future<void> showConnectionDetails(BuildContext context, LiveController live) {
                     status.vrchat != null ? 'VRChat found' : 'VRChat not found (yet)',
                     status.vrchat != null
                         ? 'OSCQuery at ${status.vrchat!.host}:${status.vrchat!.port}'
-                            '${status.vrchatInputPort != null ? ', taking input on port ${status.vrchatInputPort}' : ''}.'
+                              '${status.vrchatInputPort != null ? ', taking input on port ${status.vrchatInputPort}' : ''}.'
                         : 'VRChat announces itself over mDNS when OSC is enabled. If VRChat is running, check '
-                            'Action Menu > Options > OSC > Enabled.',
+                              'Action Menu > Options > OSC > Enabled.',
                     color: status.vrchat != null ? Colors.green : null,
                     action: mismatch == null
                         ? null
@@ -160,7 +175,7 @@ Future<void> showConnectionDetails(BuildContext context, LiveController live) {
                       'Fixed port ${oscInputHub.legacyPort}',
                       oscInputHub.legacyListening
                           ? 'Also listening here, for OSC apps without OSCQuery. Released automatically once '
-                              'VRChat is found via OSCQuery.'
+                                'VRChat is found via OSCQuery.'
                           : oscInputHub.legacyError!,
                     ),
                 ],

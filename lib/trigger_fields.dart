@@ -62,6 +62,7 @@ class TriggerFields extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         DropdownButtonFormField<String>(
+          isExpanded: true,
           initialValue: watched.name,
           decoration: const InputDecoration(labelText: 'Watch parameter'),
           items: [
@@ -72,6 +73,7 @@ class TriggerFields extends StatelessWidget {
         const SizedBox(height: 8),
         if (watched.isBoolLike) ...[
           DropdownButtonFormField<ToggleTriggerCondition>(
+            isExpanded: true,
             initialValue: toggleCondition,
             decoration: const InputDecoration(labelText: 'Condition'),
             items: const [
@@ -88,6 +90,7 @@ class TriggerFields extends StatelessWidget {
           ],
         ] else ...[
           DropdownButtonFormField<RangeTriggerCondition>(
+            isExpanded: true,
             initialValue: rangeCondition,
             decoration: const InputDecoration(labelText: 'Condition'),
             items: const [
