@@ -51,12 +51,19 @@ class LiveController extends ChangeNotifier {
 
   StreamSubscription<OscMessage>? _inputSub;
   bool _inputAcquired = false;
+  bool _disposed = false;
+  bool _pulling = false;
+  String? _knownVrchat;
+  bool _wasAutoMode = false;
+  bool _wasSyncing = false;
+  Timer? _pullAfterChange;
 
   /// transient messages for the user (e.g. auto mode switching profile).
   void Function(String message)? onNotice;
 
   LiveController(this.config) : _osc = OscClient(host: config.host, port: config.port) {
     _inputSub = oscInputHub.messages.listen(_onOscMessage);
+    oscInputHub.status.addListener(_onLinkStatus);
     reconcile();
     _timer = Timer.periodic(const Duration(milliseconds: 33), (_) => tick());
   }
@@ -70,6 +77,9 @@ class LiveController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
+    oscInputHub.status.removeListener(_onLinkStatus);
+    _pullAfterChange?.cancel();
     _timer?.cancel();
     _persistTimer?.cancel();
     _inputSub?.cancel();
@@ -349,6 +359,16 @@ class LiveController extends ChangeNotifier {
     // sync is happy with whatever arrives via OSCQuery, and holding the
     // fixed port just in case would block other OSC apps from it.
     final want = config.autoProfileMode;
+    // /avatar/change only fires on a CHANGE - switching auto mode (or live
+    // sync) on while already wearing an avatar has to ask for the current
+    // one instead of waiting for the next swap.
+    final autoTurnedOn = want && !_wasAutoMode;
+    final syncTurnedOn = config.syncFromVrchat && !_wasSyncing;
+    _wasAutoMode = want;
+    _wasSyncing = config.syncFromVrchat;
+    if (autoTurnedOn || syncTurnedOn) {
+      scheduleMicrotask(() => pullFromVrchat(avatar: autoTurnedOn, values: syncTurnedOn));
+    }
     if (want && !_inputAcquired) {
       _inputAcquired = true;
       oscInputHub.acquire();
@@ -402,10 +422,64 @@ class LiveController extends ChangeNotifier {
 
   // --- incoming OSC ---
 
+  /// catches up with what VRChat is doing right now - the current avatar
+  /// (for auto mode) and every parameter's value (for live sync). only runs
+  /// once VRChat is actually known, so it never kicks off a slow search.
+  Future<void> pullFromVrchat({bool avatar = true, bool values = true}) async {
+    if (_pulling || _disposed) return;
+    avatar = avatar && config.autoProfileMode;
+    values = values && config.syncFromVrchat;
+    if (!avatar && !values) return;
+    // the hub may already have heard an /avatar/change while auto mode was off.
+    final heard = oscInputHub.lastAvatarId;
+    if (avatar && heard != null) {
+      await _onAvatarChanged(heard);
+      avatar = false;
+      if (!values) return;
+    }
+    if (oscInputHub.status.value.vrchat == null) return;
+    _pulling = true;
+    try {
+      final timeout = Duration(seconds: config.oscQueryFetchTimeoutSeconds);
+      final lookup = await OscQueryClient.findVrchat(anyOscQueryService: config.developerMode, timeout: timeout);
+      final endpoint = lookup.endpoint;
+      if (endpoint == null || _disposed) return;
+      if (avatar && config.autoProfileMode) {
+        final id = await OscQueryClient.fetchAvatarId(endpoint);
+        if (id != null && !_disposed) {
+          oscInputHub.lastAvatarId = id;
+          await _onAvatarChanged(id);
+        }
+      }
+      if (values && config.syncFromVrchat && !_disposed) {
+        final found = await OscQueryClient.fetchAvatarParameters(endpoint, maxAttempts: 1, perAttemptTimeout: timeout);
+        if (!_disposed) applyReportedValues(found);
+      }
+    } catch (_) {
+      // best effort - live changes still arrive as they happen.
+    } finally {
+      _pulling = false;
+    }
+  }
+
+  void _onLinkStatus() {
+    final peer = oscInputHub.status.value.vrchat;
+    final key = peer == null ? null : '${peer.host}:${peer.port}';
+    if (key == _knownVrchat) return;
+    _knownVrchat = key;
+    // VRChat just showed up (app started after it, or it restarted).
+    if (key != null) pullFromVrchat();
+  }
+
   void _onOscMessage(OscMessage msg) {
     if (msg.address == '/avatar/change') {
-      if (config.autoProfileMode && msg.args.isNotEmpty && msg.args.first is String) {
-        _onAvatarChanged(msg.args.first as String);
+      if (msg.args.isEmpty || msg.args.first is! String) return;
+      if (config.autoProfileMode) _onAvatarChanged(msg.args.first as String);
+      // a freshly loaded avatar starts from its own defaults - re-read
+      // them once it's had a moment to load.
+      if (config.syncFromVrchat) {
+        _pullAfterChange?.cancel();
+        _pullAfterChange = Timer(const Duration(seconds: 2), () => pullFromVrchat(avatar: false));
       }
       return;
     }
@@ -442,7 +516,7 @@ class LiveController extends ChangeNotifier {
   }
 
   Future<void> _onAvatarChanged(String avatarId) async {
-    if (config.activeProfile.avatarId == avatarId) return;
+    if (_disposed || !config.autoProfileMode || config.activeProfile.avatarId == avatarId) return;
     // snapshot profiles are static saves, never candidates for auto mode's
     // avatar-based matching/creation.
     final match = config.profiles.where((p) => !p.isSnapshot && p.avatarId == avatarId).firstOrNull;
@@ -451,7 +525,7 @@ class LiveController extends ChangeNotifier {
     } else {
       final name = await _avatarProfileName(avatarId);
       // another change may have landed while the name lookup ran.
-      if (config.profiles.any((p) => !p.isSnapshot && p.avatarId == avatarId)) return;
+      if (_disposed || config.profiles.any((p) => !p.isSnapshot && p.avatarId == avatarId)) return;
       final profile = Profile(id: newId(), name: name, avatarId: avatarId);
       config.profiles.add(profile);
       switchProfile(profile.id);
