@@ -15,6 +15,7 @@ import 'developer_mode_dialog.dart';
 import 'error_dialog.dart';
 import 'hidden_features_dialog.dart';
 import 'live_controller.dart';
+import 'no_signal.dart';
 import 'osc_input_hub.dart';
 import 'param_control.dart';
 import 'param_form_dialog.dart';
@@ -1108,9 +1109,11 @@ class _SettingsPageState extends State<SettingsPage> {
       crossAxisAlignment: WrapCrossAlignment.center,
       spacing: 12,
       children: [
-        InkWell(
-          onTap: _handleVersionTap,
-          child: Text(_appVersion.isEmpty ? 'OSCSlider' : 'OSCSlider v$_appVersion', style: style),
+        NoSignalHold(
+          child: InkWell(
+            onTap: _handleVersionTap,
+            child: Text(_appVersion.isEmpty ? 'OSCSlider' : 'OSCSlider v$_appVersion', style: style),
+          ),
         ),
         InkWell(
           onTap: () => launchUrl(Uri.parse(_repoUrl)),

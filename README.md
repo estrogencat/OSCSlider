@@ -181,7 +181,7 @@ flutter build macos --release     # build/macos/Build/Products/Release/OSCSlider
 flutter test                      # optional
 ```
 
-On Linux you'll also need the GTK toolchain: `sudo apt install clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev` (or your distro's equivalent). macOS needs Xcode.
+On Linux you'll also need the GTK toolchain: `sudo apt install clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev` (or your distro's equivalent). macOS needs Xcode.
 
 ### Installer
 

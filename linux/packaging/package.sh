@@ -61,7 +61,7 @@ Version: $debver
 Architecture: amd64
 Maintainer: Hazel Rane <hazel@softgaypaws.com>
 Installed-Size: $size
-Depends: libgtk-3-0 | libgtk-3-0t64
+Depends: libgtk-3-0 | libgtk-3-0t64, libgstreamer1.0-0, libgstreamer-plugins-base1.0-0, gstreamer1.0-plugins-good
 Section: utils
 Priority: optional
 Homepage: https://github.com/estrogencat/OSCSlider

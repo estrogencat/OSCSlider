@@ -4,6 +4,7 @@ import 'dart:math';
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'android_platform.dart';
@@ -17,6 +18,7 @@ import 'discovery_flow.dart';
 import 'discovery_sheet.dart';
 import 'error_dialog.dart';
 import 'live_controller.dart';
+import 'no_signal.dart';
 import 'osc_input_hub.dart';
 import 'param_card.dart';
 import 'param_control.dart';
@@ -37,6 +39,7 @@ void main() {
   runZonedGuarded(() async {
     WidgetsFlutterBinding.ensureInitialized();
     await AndroidPlatform.init();
+    HardwareKeyboard.instance.addHandler(NoSignal.handleKey);
     FlutterError.onError = (details) {
       FlutterError.presentError(details);
       CrashLog.record(details.exception, details.stack, context: 'FlutterError');
@@ -59,6 +62,7 @@ class OscSliderApp extends StatelessWidget {
       builder: (context, settings, _) {
         return MaterialApp(
           title: 'OSCSlider',
+          navigatorKey: appNavigatorKey,
           debugShowCheckedModeBanner: false,
           theme: buildAppTheme(settings.buildScheme()),
           home: const HomePage(),
