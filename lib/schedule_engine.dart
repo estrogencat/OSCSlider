@@ -126,6 +126,7 @@ class ScheduleEngine {
     void Function(ParamControl, bool) onToggle,
   ) {
     if (now.hour != sched.timeOfDayHour || now.minute != sched.timeOfDayMinute) return;
+    if (sched.daysOfWeek.isNotEmpty && !sched.daysOfWeek.contains(now.weekday)) return;
     final todayKey = '${now.year}-${now.month}-${now.day}';
     if (state.lastFiredDate == todayKey) return;
     state.lastFiredDate = todayKey;

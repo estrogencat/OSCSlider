@@ -114,10 +114,12 @@ void main() {
     ));
     final socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
     socket.send(announce, mdnsGroupIPv4, mdnsPort);
-    for (var i = 0; i < 50 && service.peers.isEmpty; i++) {
+    // other test files announce their own fake VRChats on the same network.
+    Iterable<OscQueryPeer> mine() => service.peers.where((p) => p.instanceName == instance);
+    for (var i = 0; i < 50 && mine().isEmpty; i++) {
       await Future.delayed(const Duration(milliseconds: 20));
     }
-    final peer = service.peers.single;
+    final peer = mine().single;
     expect(peer.isVrchat, true);
     expect(peer.port, 43210);
     expect(peer.host, '127.0.0.1');
@@ -128,10 +130,10 @@ void main() {
       answers: [DnsRecord.ptr(oscJsonServiceType, '$instance.$oscJsonServiceType', ttl: 0)],
     ));
     socket.send(goodbye, mdnsGroupIPv4, mdnsPort);
-    for (var i = 0; i < 50 && service.peers.isNotEmpty; i++) {
+    for (var i = 0; i < 50 && mine().isNotEmpty; i++) {
       await Future.delayed(const Duration(milliseconds: 20));
     }
-    expect(service.peers, isEmpty);
+    expect(mine(), isEmpty);
     socket.close();
   });
 }

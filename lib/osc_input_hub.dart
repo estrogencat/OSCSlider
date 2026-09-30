@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 
 import 'crash_log.dart';
 import 'osc_listener.dart';
+import 'osc_relay.dart';
 import 'oscquery_service.dart';
 
 /// what the app currently knows about VRChat, for the status chip.
@@ -62,6 +63,9 @@ class OscInputHub {
   bool _verifying = false;
   Timer? _monitor;
 
+  /// where VRChat's output is relayed on to (Settings > Forwarding).
+  final OscRelay relay = OscRelay('OSC relay');
+
   final _controller = StreamController<OscMessage>.broadcast();
   Stream<OscMessage> get messages => _controller.stream;
 
@@ -110,6 +114,19 @@ class OscInputHub {
   }
 
   bool get isListening => (_service?.oscPort != null) || _legacy != null;
+
+  /// relays everything received on to [targets] - loopback targets that are
+  /// this app's own ports are skipped, since that would feed straight back in.
+  void setRelayTargets(List<(String, int)> targets) {
+    final own = {service?.oscPort, _legacyPort};
+    bool isSelf((String, int) t) {
+      final h = t.$1.toLowerCase();
+      final local = h == 'localhost' || h.startsWith('127.') || h == '::1';
+      return local && own.contains(t.$2);
+    }
+
+    relay.targets = targets.where((t) => !isSelf(t)).toList();
+  }
 
   /// the configured send port changed - follow it with the legacy listener.
   Future<void> setLegacyPort(int port) async {
@@ -166,6 +183,7 @@ class OscInputHub {
       _closeLegacy();
     }
     if (!viaOscQuery && _oscQueryConfirmed) return;
+    relay.send(data);
     final wasReceiving = status.value.receiving;
     _lastPacket = DateTime.now();
     _lastPacketViaOscQuery = viaOscQuery;

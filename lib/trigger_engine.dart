@@ -69,7 +69,7 @@ class TriggerEngine {
     if (watched == null) return;
     final state = _runtime.putIfAbsent(key, () => _TriggerRuntimeState());
 
-    if (watched.type == ParamType.toggle) {
+    if (watched.isBoolLike) {
       final value = toggleValueOf(currentValues, watched);
       final previous = state.previousValue is bool ? state.previousValue as bool : null;
       state.previousValue = value;

@@ -37,7 +37,10 @@ The chip in the title bar turns green once VRChat is found.
 ## Features
 
 ### Controls
-- **Sliders** (float or int) and **toggles** for any avatar parameter. Int sliders snap to whole numbers.
+- **Sliders** (float or int) and **toggles** for any avatar parameter. Int sliders snap to whole numbers, floats can snap to a step, and sliders can **spring back** when released, like a joystick.
+- **Buttons**: hold them down, or tap for a quick press and release.
+- **Chatbox**: type into your VRChat chatbox, with the typing bubble while you write and a 144-character counter.
+- **VRChat controls library**: VRChat's own OSC controls, ready to add without typing addresses. Movement and look axes, jump, run, grab/use/drop, voice, Quick Menu, Safe Mode, chatbox, and avatar height.
 - **Custom** parameters for any OSC type (int64, double, string, color, MIDI, blob, time tag...) and any address. Start a name with `/` to send somewhere other than `/avatar/parameters/`.
 - **Live sync** from VRChat. Changes made in-game (radial menu, contacts, physbones) show up on the dashboard as they happen.
 - A grid that uses the space on a wide window, collapsible categories, and a <kbd>⋮</kbd> / right-click menu on every parameter.
@@ -56,17 +59,21 @@ Give any slider or toggle a life of its own:
 | **Ramp** | Glides between two values. Once, loop or ping-pong, with a repeat count, per-repeat speed change, and linear / ease / sine / hand-drawn easing curves |
 | **Random** | Picks a new value (or flips a toggle) at random intervals, optionally drifting smoothly |
 | **Blink** | Cycles a toggle on and off |
-| **Schedule** | Fires at a time of day, every N seconds, after you've been idle, or once after a countdown. Can auto-revert for a pulse |
+| **Schedule** | Fires at a time of day (on chosen weekdays), every N seconds, after you've been idle, or once after a countdown. Can auto-revert for a pulse |
 
 Any automation can be **triggered by another parameter**: when a toggle turns on or off, while it's on, when a slider crosses a threshold, and more. It can also fire only every N activations.
 
 ### Sequences
-Script changes across several parameters: *set a value, wait, glide another, loop*. Sequences can be triggered like automations, and can run their own per-parameter automations that only live while the sequence runs. The app keeps sequences and automations from fighting over the same parameter.
+Script changes across several parameters: *set a value, wait, glide another, press a button, say something in the chatbox, loop*. Sequences can be triggered like automations, and can run their own per-parameter automations that only live while the sequence runs. The app keeps sequences and automations from fighting over the same parameter.
 
 ### Profiles & snapshots
-- A separate parameter set per avatar. **Auto mode** switches (or creates) profiles when you change avatar, named after the avatar.
+- A separate parameter set per avatar. **Auto mode** switches profiles when you change avatar, picking up the one you're already wearing. It can also create profiles for new avatars, named after the avatar, or only switch between ones you've already linked.
 - Duplicate profiles, or share them as JSON via the clipboard.
 - **Snapshots** freeze the current values under a name so you can apply them again later.
+
+### Other OSC apps
+- **Forwarding**: relay VRChat's output to apps that can't use OSCQuery, so they don't need port 9001 to themselves. You can also copy everything OSCSlider sends to another device.
+- A configurable fallback listen port, for when VRChat is launched with a custom `--osc` output port.
 
 ### Everything else
 - A Material You theme picker, with presets or a custom colour wheel.
@@ -191,6 +198,8 @@ The installer lands in `installer/Output/`.
 | `lib/oscquery_service.dart`, `mdns_codec.dart` | The app's own OSCQuery service: loopback HTTP + UDP, and a small mDNS responder |
 | `lib/osc_input_hub.dart` | All incoming OSC in one stream, plus the connection status |
 | `lib/oscquery_client.dart`, `discovery_flow.dart`, `vrchat_files.dart` | Finding VRChat, reading its parameter tree, and the saved-config fallback |
+| `lib/vrchat_controls.dart` | The library of VRChat's built-in OSC controls (from docs.vrchat.com) |
+| `lib/osc_relay.dart` | Forwarding to other OSC apps |
 | `lib/platform_paths.dart` | Per-OS folders (config, VRChat's files under Proton) and socket options |
 | `lib/main.dart`, `*_page.dart`, `*_dialog.dart`, `param_card.dart` | UI |
 | `windows/`, `linux/`, `macos/`, `installer/` | Platform runners, packaging (`linux/packaging/package.sh` for AppImage/`.deb`/tarball, `macos/packaging/` for the `.dmg`), and the Inno Setup script |

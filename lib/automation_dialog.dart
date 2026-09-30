@@ -97,6 +97,7 @@ class _AutomationDialogState extends State<AutomationDialog> {
   // schedule fields
   late final TextEditingController _hour;
   late final TextEditingController _minute;
+  late Set<int> _days;
   late final TextEditingController _intervalSeconds;
   late final TextEditingController _idleSeconds;
   late final TextEditingController _countdownSeconds;
@@ -120,7 +121,7 @@ class _AutomationDialogState extends State<AutomationDialog> {
   bool get _isSlider => widget.param.type == ParamType.slider;
 
   List<ParamControl> get _eligibleWatchParams => widget.allParameters
-      .where((p) => p.name != widget.param.name && (p.type == ParamType.slider || p.type == ParamType.toggle))
+      .where((p) => p.name != widget.param.name && (p.type == ParamType.slider || p.isBoolLike))
       .toList();
 
   @override
@@ -178,6 +179,7 @@ class _AutomationDialogState extends State<AutomationDialog> {
 
     _hour = TextEditingController(text: '${sched?.timeOfDayHour ?? 21}');
     _minute = TextEditingController(text: '${sched?.timeOfDayMinute ?? 0}');
+    _days = {...?sched?.daysOfWeek};
     _intervalSeconds = TextEditingController(text: _fmt(sched?.intervalSeconds ?? 1800));
     _idleSeconds = TextEditingController(text: _fmt(sched?.idleSeconds ?? 300));
     _countdownSeconds = TextEditingController(text: _fmt(sched?.countdownSeconds ?? 60));
@@ -318,6 +320,8 @@ class _AutomationDialogState extends State<AutomationDialog> {
         },
         timeOfDayHour: _clampInt(_hour, 21, 0, 23),
         timeOfDayMinute: _clampInt(_minute, 0, 0, 59),
+        // all seven picked is the same as "every day".
+        daysOfWeek: _days.length == 7 ? [] : (_days.toList()..sort()),
         intervalSeconds: _positive(_intervalSeconds, 1800),
         idleSeconds: _positive(_idleSeconds, 300),
         countdownSeconds: _positive(_countdownSeconds, 60),
@@ -354,7 +358,7 @@ class _AutomationDialogState extends State<AutomationDialog> {
   bool _isPulseTrigger() {
     final watched = _eligibleWatchParams.where((p) => p.name == _watchedParamName).firstOrNull;
     if (watched == null) return false;
-    return watched.type == ParamType.toggle
+    return watched.isBoolLike
         ? _toggleCondition == ToggleTriggerCondition.turnsOn || _toggleCondition == ToggleTriggerCondition.turnsOff
         : _rangeCondition == RangeTriggerCondition.crossesAbove || _rangeCondition == RangeTriggerCondition.crossesBelow;
   }
@@ -721,6 +725,34 @@ class _AutomationDialogState extends State<AutomationDialog> {
                 ),
               ),
             ],
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              for (final (day, label) in const [
+                (DateTime.monday, 'Mon'),
+                (DateTime.tuesday, 'Tue'),
+                (DateTime.wednesday, 'Wed'),
+                (DateTime.thursday, 'Thu'),
+                (DateTime.friday, 'Fri'),
+                (DateTime.saturday, 'Sat'),
+                (DateTime.sunday, 'Sun'),
+              ])
+                FilterChip(
+                  label: Text(label),
+                  selected: _days.contains(day),
+                  onSelected: (v) => setState(() => v ? _days.add(day) : _days.remove(day)),
+                ),
+            ],
+          ),
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Text(
+              _days.isEmpty || _days.length == 7 ? 'Every day' : 'Only on the selected days',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
           ),
         ];
       case _UnifiedKind.interval:

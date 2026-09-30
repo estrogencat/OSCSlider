@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 
 import 'crash_log.dart';
+import 'osc_relay.dart';
 
 class OscSendException implements Exception {
   final String message;
@@ -27,6 +28,9 @@ class OscClient {
   Future<InternetAddress>? _targetFuture;
   DateTime? _lookupFailedAt;
   bool _disposed = false;
+
+  /// extra destinations every send is copied to (Settings > Forwarding).
+  final OscRelay mirror = OscRelay('OSC mirror');
 
   /// the most recent send failure (null once a send succeeds again) - lets
   /// the UI say "can't reach host" instead of failing silently.
@@ -50,6 +54,11 @@ class OscClient {
   // bool args carry no payload bytes - the type tag itself ('T' or 'F') is the value.
   Future<void> sendBool(String address, bool value, {bool surfaceErrors = false}) =>
       _send(address, value ? ',T' : ',F', Uint8List(0), surfaceErrors: surfaceErrors);
+
+  /// VRChat's chatbox: /chatbox/input s b n - [sendNow] false just opens
+  /// the in-game keyboard pre-filled, [notify] false skips the sound.
+  Future<void> sendChatbox(String address, String text, {required bool sendNow, required bool notify}) =>
+      _send(address, ',s${sendNow ? 'T' : 'F'}${notify ? 'T' : 'F'}', oscString(text), surfaceErrors: true);
 
   /// dispatches every OSC 1.0/1.1 type tag except arrays (which don't fit
   /// this app's one-parameter-one-value model), so the app can send types it
@@ -218,6 +227,7 @@ class OscClient {
       final socket = await _bindFor(target);
       if (_disposed) return;
       final sent = socket.send(packet, target, port);
+      mirror.send(packet);
       if (sent == 0) throw OscSendException('send buffer full - packet dropped');
       if (lastError.value != null) lastError.value = null;
     } catch (e, st) {
@@ -229,6 +239,7 @@ class OscClient {
 
   void dispose() {
     _disposed = true;
+    mirror.close();
     _socket?.close();
     _socket = null;
     lastError.dispose();
