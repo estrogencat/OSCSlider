@@ -1,7 +1,7 @@
 name: Release
 
-# builds Windows (installer + portable zip), Linux (AppImage, .deb, tarball)
-# and macOS (.dmg + zip) and attaches them to a GitHub Release. runs on pushing a version tag
+# builds Windows (installer + portable zip), Linux (AppImage, .deb, tarball),
+# macOS (.dmg + zip) and Android (.apk), and attaches them to a GitHub Release. runs on pushing a version tag
 # (e.g. "v1.2.0", or "v1.2.0-beta.1" for a pre-release), or manually via
 # workflow_dispatch for test builds - those skip the release step, and the
 # builds are downloadable from the run's artifacts instead.
@@ -34,6 +34,35 @@ jobs:
         with:
           channel: stable
           cache: true
+      - uses: actions/setup-java@v4
+        if: matrix.platform == 'apk'
+        with:
+          distribution: temurin
+          java-version: 17
+
+      # a stable signing key lets new APKs install over old ones. without the
+      # secrets it's signed with a throwaway debug key: fine for testing, but
+      # each build then has to be uninstalled before the next goes on.
+      - name: Android signing key
+        if: matrix.platform == 'apk'
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::warning::no ANDROID_KEYSTORE_BASE64 secret, so the APK is signed with a debug key"
+            exit 0
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > android/app/release.jks
+          {
+            echo "storeFile=release.jks"
+            echo "storePassword=$KEYSTORE_PASSWORD"
+            echo "keyAlias=$KEY_ALIAS"
+            echo "keyPassword=${KEY_PASSWORD:-$KEYSTORE_PASSWORD}"
+          } > android/key.properties
+
       - run: flutter pub get
       - run: flutter analyze
       - run: flutter test
@@ -54,6 +83,9 @@ jobs:
           - os: macos-latest
             platform: macos
             label: macOS
+          - os: ubuntu-latest
+            platform: apk
+            label: Android
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
@@ -125,6 +157,12 @@ jobs:
           python3 -m dmgbuild -s macos/packaging/dmg_settings.py \
             -D app="$app" -D background="$PWD/dmg-background.tiff" \
             "OSCSlider" dist/OSCSlider-macos.dmg
+
+      - name: Package (Android)
+        if: matrix.platform == 'apk'
+        run: |
+          mkdir -p dist
+          cp build/app/outputs/flutter-apk/app-release.apk dist/OSCSlider-android.apk
 
       - uses: actions/upload-artifact@v4
         with:

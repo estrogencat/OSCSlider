@@ -25,6 +25,7 @@ Sliders, toggles, automations and sequences, with your avatar's parameters disco
    | Windows | `OSCSlider-Setup.exe`, or the portable `.zip` |
    | Linux (x64) | **`OSCSlider-x86_64.AppImage`**: one file, just make it executable and run it<br>`oscslider_<version>_amd64.deb` for Debian/Ubuntu<br>`OSCSlider-linux-x64.tar.gz`: a plain folder, with `./install.sh` to add it to your app menu |
    | macOS (Intel + Apple Silicon) | **`OSCSlider-macos.dmg`**: open it and drag OSCSlider into Applications<br>`OSCSlider-macos.zip` if you'd rather skip the disk image<br>(see the [FAQ](#faq) for opening an unsigned app) |
+   | Android (testing) | `OSCSlider-android.apk`: a remote for VRChat on your PC or Quest (see the [FAQ](#faq)) |
 
 2. In VRChat, turn on OSC: **Action Menu → Options → OSC → Enabled**.
 3. Open OSCSlider and hit **Discover** (the wifi-search icon in the title bar) to pull in your current avatar's parameters.
@@ -113,6 +114,19 @@ Tap the version number at the bottom of Settings 5 times to unlock it, and 5 mor
 <summary><strong>Can I use it with VRChat on Quest?</strong></summary>
 
 Set **Send to host** in Settings to your Quest's IP address. Sending works, but receiving VRChat's output on a standalone Quest relies on the classic port 9001 fallback rather than OSCQuery.
+
+</details>
+
+<details>
+<summary><strong>Can I use it on my phone?</strong></summary>
+
+The Android build is in testing. It works as a remote: put the IP of the PC or Quest running VRChat in **Send to host**, and sliders, toggles, buttons and the chatbox all work over Wi-Fi.
+
+A few things work differently on a phone:
+
+- **Discover** can't read your avatar from another device. Set parameters up in the desktop app, use **Export (copy JSON)** in the profile's ⋮ menu, send that text to your phone (a chat app works), and use **Import** in the phone's Settings. You can also add parameters by hand.
+- **Receiving** VRChat's output (live sync, triggers, Auto Mode) needs it sent to the phone. Add the phone as a forwarding target in the desktop app (Settings → Other OSC apps), or launch VRChat with `--osc=9000:<phone IP>:9001`.
+- **Automations and sequences** pause when the screen turns off. Turn on *Keep the screen on* in Settings if you need them running.
 
 </details>
 
