@@ -19,6 +19,7 @@ concurrency:
 
 jobs:
   check:
+    name: Analyze & test
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

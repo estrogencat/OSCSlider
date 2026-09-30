@@ -25,6 +25,7 @@ concurrency:
 
 jobs:
   test:
+    name: Test
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -38,6 +39,7 @@ jobs:
       - run: flutter test
 
   build:
+    name: ${{ matrix.label }}
     needs: test
     strategy:
       fail-fast: false
@@ -45,10 +47,13 @@ jobs:
         include:
           - os: windows-latest
             platform: windows
+            label: Windows
           - os: ubuntu-latest
             platform: linux
+            label: Linux
           - os: macos-latest
             platform: macos
+            label: macOS
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
@@ -122,6 +127,7 @@ jobs:
           if-no-files-found: error
 
   release:
+    name: Publish release
     needs: build
     # a GitHub Release needs an actual tag to attach to.
     if: startsWith(github.ref, 'refs/tags/v')
