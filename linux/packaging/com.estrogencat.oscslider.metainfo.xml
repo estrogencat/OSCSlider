@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.estrogencat.oscslider</id>
+  <name>OSCSlider</name>
+  <summary>Control VRChat avatar parameters over OSC</summary>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <description>
+    <p>Sliders, toggles, automations and sequences for VRChat avatar parameters, with automatic parameter discovery over OSCQuery.</p>
+  </description>
+  <launchable type="desktop-id">com.estrogencat.oscslider.desktop</launchable>
+  <url type="homepage">https://github.com/estrogencat/OSCSlider</url>
+  <developer id="com.estrogencat">
+    <name>Hazel Rane</name>
+  </developer>
+  <content_rating type="oars-1.1"/>
+</component>

@@ -23,8 +23,8 @@ Sliders, toggles, automations and sequences, with your avatar's parameters disco
    | Platform | Download |
    | --- | --- |
    | Windows | `OSCSlider-Setup.exe`, or the portable `.zip` |
-   | Linux (x64) | `OSCSlider-linux-x64.tar.gz`. Extract it and run `./oscslider`, or `./install.sh` to add it to your app menu |
-   | macOS (Intel + Apple Silicon) | `OSCSlider-macos.zip` (see the [FAQ](#faq) for opening an unsigned app) |
+   | Linux (x64) | **`OSCSlider-x86_64.AppImage`**: one file, just make it executable and run it<br>`oscslider_<version>_amd64.deb` for Debian/Ubuntu<br>`OSCSlider-linux-x64.tar.gz`: a plain folder, with `./install.sh` to add it to your app menu |
+   | macOS (Intel + Apple Silicon) | **`OSCSlider-macos.dmg`**: open it and drag OSCSlider into Applications<br>`OSCSlider-macos.zip` if you'd rather skip the disk image<br>(see the [FAQ](#faq) for opening an unsigned app) |
 
 2. In VRChat, turn on OSC: **Action Menu → Options → OSC → Enabled**.
 3. Open OSCSlider and hit **Discover** (the wifi-search icon in the title bar) to pull in your current avatar's parameters.
@@ -177,7 +177,7 @@ The installer lands in `installer/Output/`.
 ### Releases & CI
 
 - Every push and pull request runs `flutter analyze` and `flutter test` ([CI](.github/workflows/ci.yml)).
-- Pushing a `v*` tag builds Windows, Linux and macOS, then publishes a release with generated notes and a `SHA256SUMS.txt` ([Release](.github/workflows/release.yml)). Tags with a suffix, like `v1.2.0-beta.1`, become pre-releases, which the in-app update check ignores.
+- Pushing a `v*` tag builds Windows (installer + zip), Linux (AppImage, `.deb`, tarball) and macOS (`.dmg` + zip), then publishes a release with generated notes and a `SHA256SUMS.txt` ([Release](.github/workflows/release.yml)). Tags with a suffix, like `v1.2.0-beta.1`, become pre-releases, which the in-app update check ignores.
 - Running the Release workflow by hand builds everything as downloadable artifacts, without publishing.
 
 ### Project layout
@@ -193,7 +193,7 @@ The installer lands in `installer/Output/`.
 | `lib/oscquery_client.dart`, `discovery_flow.dart`, `vrchat_files.dart` | Finding VRChat, reading its parameter tree, and the saved-config fallback |
 | `lib/platform_paths.dart` | Per-OS folders (config, VRChat's files under Proton) and socket options |
 | `lib/main.dart`, `*_page.dart`, `*_dialog.dart`, `param_card.dart` | UI |
-| `windows/`, `linux/`, `macos/`, `installer/` | Platform runners, Linux packaging (`linux/packaging/`), and the Inno Setup script |
+| `windows/`, `linux/`, `macos/`, `installer/` | Platform runners, packaging (`linux/packaging/package.sh` for AppImage/`.deb`/tarball, `macos/packaging/` for the `.dmg`), and the Inno Setup script |
 
 ### How receiving works
 

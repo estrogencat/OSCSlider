@@ -1,7 +1,7 @@
 name: Release
 
-# builds Windows (installer + portable zip), Linux (tarball) and macOS (app
-# zip) and attaches them to a GitHub Release. runs on pushing a version tag
+# builds Windows (installer + portable zip), Linux (AppImage, .deb, tarball)
+# and macOS (.dmg + zip) and attaches them to a GitHub Release. runs on pushing a version tag
 # (e.g. "v1.2.0", or "v1.2.0-beta.1" for a pre-release), or manually via
 # workflow_dispatch for test builds - those skip the release step, and the
 # builds are downloadable from the run's artifacts instead.
@@ -107,18 +107,24 @@ jobs:
       - name: Package (Linux)
         if: matrix.platform == 'linux'
         run: |
-          stage="OSCSlider-linux-x64"
-          mkdir -p "$stage" dist
-          cp -r build/linux/x64/release/bundle/. "$stage/"
-          cp linux/packaging/install.sh linux/packaging/com.estrogencat.oscslider.desktop "$stage/"
-          chmod +x "$stage/install.sh" "$stage/oscslider"
-          tar -czf "dist/$stage.tar.gz" "$stage"
+          curl -sSfL -o appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+          APPIMAGETOOL="$PWD/appimagetool" linux/packaging/package.sh build/linux/x64/release/bundle "${{ steps.version.outputs.version }}" dist
 
       - name: Package (macOS)
         if: matrix.platform == 'macos'
         run: |
+          app=build/macos/Build/Products/Release/OSCSlider.app
           mkdir -p dist
-          ditto -c -k --sequesterRsrc --keepParent build/macos/Build/Products/Release/OSCSlider.app dist/OSCSlider-macos.zip
+          # the plain zip, for anyone who'd rather not mount a disk image.
+          ditto -c -k --sequesterRsrc --keepParent "$app" dist/OSCSlider-macos.zip
+          # the drag-to-Applications disk image. the background is combined
+          # into one TIFF so Retina screens get the sharp @2x version.
+          tiffutil -cathidpicheck macos/packaging/dmg-background.png macos/packaging/dmg-background@2x.png -out dmg-background.tiff
+          python3 -m pip install --quiet --break-system-packages dmgbuild
+          python3 -m dmgbuild -s macos/packaging/dmg_settings.py \
+            -D app="$app" -D background="$PWD/dmg-background.tiff" \
+            "OSCSlider" dist/OSCSlider-macos.dmg
 
       - uses: actions/upload-artifact@v4
         with:
