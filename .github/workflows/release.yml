@@ -142,6 +142,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # to delete this run's artifacts once they're on the release.
+      actions: write
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -158,5 +160,13 @@ jobs:
           fail_on_unmatched_files: true
           generate_release_notes: true
           # "v1.2.0-beta.1" and friends are marked as pre-releases, which
-          # the in-app update check ignores.
+          # the in-app updater only offers if pre-releases are turned on.
           prerelease: ${{ contains(github.ref_name, '-') }}
+
+      - name: Delete build artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for id in $(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" --jq '.artifacts[].id'); do
+            gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/$id"
+          done

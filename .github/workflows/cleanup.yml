@@ -1,0 +1,26 @@
+# deletes every build artifact in the repo. run it by hand from the Actions tab.
+name: Clean up artifacts
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: write
+
+jobs:
+  cleanup:
+    name: Delete artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # list first, then delete, so pagination doesn't skip any.
+          ids=$(gh api --paginate "repos/${{ github.repository }}/actions/artifacts" --jq '.artifacts[].id')
+          count=0
+          for id in $ids; do
+            gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/$id"
+            count=$((count + 1))
+          done
+          echo "deleted $count artifact(s)"
